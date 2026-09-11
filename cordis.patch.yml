@@ -1,0 +1,19 @@
+# dsh-mcp-servers 的 bundle patch。
+#
+# 正是这个文件让本包可以"装上即生效"：凡是在 dsh.profile.bundles 里列出
+# dsh-mcp-servers 的 profile 都会应用这一层，而
+# `dsh plugin --profile <name> add <spec>` 会在安装后自动把本包追加进那个列表——因为
+# manifest 里声明了 dsh.bundle.patch。
+#
+# 这里插入的行就是本包的 Node 半边。Web 外壳的客户端模块系统会发现同一个包上的
+# dsh.client 声明并把它的 lib/client.js 提供给页面，所以这一行同时也让设置面板有了
+# MCP 页面。
+#
+# 这里故意不写 config。服务清单按优先级从低到高来自三处：
+# <harness home>/mcp.json、本行自己的 mcpServers、以及 MCP 设置页面写入的用户覆盖。
+# 想把服务固定在组合里的部署，可以在下面加 config: mcpServers:，或者在自己的
+# cordis.patch.yml 里重述这一行——profile 自己的补丁层应用在所有 bundle 层之后。
+
+- insert:
+    - id: mcp-servers
+      name: 'dsh-mcp-servers'

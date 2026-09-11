@@ -1,0 +1,22 @@
+{
+  "mcpServers": {
+    "memory": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-memory"],
+      "env": {
+        "MEMORY_FILE_PATH": "/replace/with/an/absolute/path/memory.jsonl"
+      }
+    },
+    "files": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-filesystem", "/replace/with/a/directory"]
+    },
+    "remote": {
+      "url": "http://localhost:3000/mcp",
+      "headers": {
+        "Authorization": "Bearer replace-with-a-token"
+      },
+      "toolCallTimeoutMs": 30000
+    }
+  }
+}

@@ -1,0 +1,30 @@
+# 把 dsh-mcp-servers 当作 dsh 补丁层使用的示例。
+#
+# 一行就够了：Node 半边就是这一行的插件，而 Web 外壳的客户端模块系统会发现同一个包上
+# 的 dsh.client 声明并把它的 lib/client.js 提供给页面，因此设置区块不需要第二个条目。
+#
+# 临时试用（不留痕）：
+#   dsh web --patch "$PWD/examples/mcp-servers.patch.yml"
+# 长期保留：把这一条 entry 追加到
+# $DSH_HOME/profiles/<name>/cordis.patch.yml（单个 profile），或
+# $DSH_HOME/cordis.patch.yml（本机所有 profile）。
+#
+# path 可选，默认 <harness home>/mcp.json；把它指向已有文件即可复用其他 MCP 客户端
+# 维护的服务清单。内联的 mcpServers 会合并在该文件之上，并按名称覆盖。
+#
+# 凭据要写在条目自己的 env 里：bridge 在启动 stdio 服务之前，会把环境里名字看起来像
+# 凭据的变量移除。
+- insert:
+    - id: mcp-servers
+      name: 'dsh-mcp-servers'
+      config:
+        mcpServers:
+          github:
+            command: npx
+            args: ['-y', '@modelcontextprotocol/server-github']
+            env:
+              GITHUB_TOKEN: !!js process.env.GITHUB_TOKEN
+          web:
+            url: http://localhost:3000/mcp
+            headers:
+              Authorization: !!js `Bearer ${process.env.MCP_TOKEN ?? ''}`
