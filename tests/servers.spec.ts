@@ -10,6 +10,7 @@ import { afterEach, describe, expect, it } from 'vitest'
 import {
   assertServers,
   mergeServers,
+  partitionServers,
   readConfigFile,
   resolveConfigPath,
   resolveTransport,
@@ -121,33 +122,76 @@ describe('mergeServers', () => {
   })
 })
 
+describe('partitionServers', () => {
+  it('把能挂载的条目挑出来，其余带上原因', () => {
+    const result = partitionServers({
+      good: { command: 'x' },
+      'bad name': { command: 'x' },
+      nocommand: {},
+      nourl: { transport: 'streamable-http' },
+    })
+    expect(Object.keys(result.servers)).toEqual(['good'])
+    expect(result.problems).toEqual([
+      'mcp-servers: server name "bad name" must match /^[A-Za-z0-9_-]{1,32}$/',
+      'mcp-servers: server "nocommand" uses stdio and requires a command',
+      'mcp-servers: server "nourl" uses streamable-http and requires a url',
+    ])
+  })
+
+  it('全部条目都可用时不产生任何问题', () => {
+    expect(partitionServers({ a: { command: 'x' } })).toEqual({ servers: { a: { command: 'x' } }, problems: [] })
+  })
+})
+
 describe('readConfigFile', () => {
   it('读出 mcpServers 映射', async () => {
     const path = await writeJson(JSON.stringify({ mcpServers: { a: { command: 'x' } } }))
-    expect(readConfigFile(path)).toEqual({ a: { command: 'x' } })
+    expect(readConfigFile(path)).toEqual({ servers: { a: { command: 'x' } }, problems: [] })
   })
 
-  it('文件不存在时不贡献任何服务', () => {
-    expect(readConfigFile(join(tmpdir(), 'dsh-mcp-servers-absent-dir', 'mcp.json'))).toEqual({})
+  it('文件不存在时不贡献任何服务，也不算问题', () => {
+    expect(readConfigFile(join(tmpdir(), 'dsh-mcp-servers-absent-dir', 'mcp.json')))
+      .toEqual({ servers: {}, problems: [] })
   })
 
   it('文档里没有该键时不贡献任何服务', async () => {
     const path = await writeJson('{}')
-    expect(readConfigFile(path)).toEqual({})
+    expect(readConfigFile(path)).toEqual({ servers: {}, problems: [] })
   })
 
-  it('JSON 损坏、文档不是对象、映射不是对象时都直接报错', async () => {
-    const malformed = await writeJson('{')
+  it('逐条过滤挂不起来的条目，并把原因带上文件路径', async () => {
+    const path = await writeJson(JSON.stringify({ mcpServers: { good: { command: 'x' }, bad: {} } }))
+    const result = readConfigFile(path)
+    expect(Object.keys(result.servers)).toEqual(['good'])
+    expect(result.problems).toEqual([`${path}: mcp-servers: server "bad" uses stdio and requires a command`])
+  })
+
+  // 这是 issue #2：一个漏掉的逗号曾让 apply() 拒绝、整个插件树加载失败、harness 起不来。
+  it('JSON 损坏、文档不是对象、映射不是对象时都只报告问题，绝不抛错', async () => {
+    const malformed = await writeJson('{"mcpServers":{"a":{"command":"x"} "b":{}}}')
     const list = await writeJson('[]')
     const wrongMap = await writeJson('{"mcpServers":[]}')
-    expect(() => readConfigFile(malformed)).toThrow(/not valid JSON/)
-    expect(() => readConfigFile(list)).toThrow(/must contain a JSON object/)
-    expect(() => readConfigFile(wrongMap)).toThrow(/must carry "mcpServers" as an object/)
+
+    const fromMalformed = readConfigFile(malformed)
+    expect(fromMalformed.servers).toEqual({})
+    expect(fromMalformed.problems).toHaveLength(1)
+    expect(fromMalformed.problems[0]).toMatch(/is not valid JSON/)
+
+    expect(readConfigFile(list)).toEqual({
+      servers: {},
+      problems: [`mcp-servers: ${list} must contain a JSON object`],
+    })
+    expect(readConfigFile(wrongMap)).toEqual({
+      servers: {},
+      problems: [`mcp-servers: ${wrongMap} must carry "mcpServers" as an object`],
+    })
   })
 
-  it('解析出的路径根本读不了时直接报错', async () => {
+  it('路径根本读不了时报告问题而不是抛错', async () => {
     root = await mkdtemp(join(tmpdir(), 'dsh-mcp-servers-'))
-    expect(() => readConfigFile(root!)).toThrow(/cannot read/)
+    const result = readConfigFile(root)
+    expect(result.servers).toEqual({})
+    expect(result.problems[0]).toMatch(/cannot read/)
   })
 })
 

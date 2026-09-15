@@ -23,10 +23,12 @@ import {
   McpServersSchema,
   assertServers,
   mergeServers,
+  partitionServers,
   readConfigFile,
   resolveConfigPath,
   toMcpClientConfig,
 } from './servers.ts'
+import type { McpServersResult } from './servers.ts'
 import type { McpServerDefinition, McpServersSection } from './types.ts'
 
 export type { McpServerDefinition, McpServersSection, McpTransport } from './types.ts'
@@ -38,11 +40,13 @@ export {
   SERVER_NAME_PATTERN,
   assertServers,
   mergeServers,
+  partitionServers,
   readConfigFile,
   resolveConfigPath,
   resolveTransport,
   toMcpClientConfig,
 } from './servers.ts'
+export type { McpServersResult } from './servers.ts'
 export type { McpClientConfig, McpClientHttpConfig, McpClientStdioConfig } from './servers.ts'
 export { DSH_HOME_DIR_NAME, DSH_HOME_ENV, resolveDshHome } from './home.ts'
 
@@ -130,13 +134,23 @@ export async function reconcile(
 /**
  * 解析本插件组合出的基础服务清单：读取解析后路径上的 `mcp.json`，再把配置行里的
  * 内联服务合并其上。
+ *
+ * 两个来源都逐条过滤：能挂载的进 `servers`，其余进 `problems`。这里不抛错——基础层
+ * 来自用户可编辑的文件与部署组合，一条坏条目不该阻止 harness 启动（详见
+ * {@link readConfigFile}）。
  * @param config - 解析后的插件配置。
- * @returns 基础服务清单，且已检查过每条定义都能挂载。
+ * @returns 可挂载的基础服务清单，以及所有被跳过条目的原因。
  */
-export function resolveBaseServers(config: Config): Record<string, McpServerDefinition> {
-  const servers = mergeServers(config.mcpServers, readConfigFile(resolveConfigPath(config.path)))
-  assertServers(servers)
-  return servers
+export function resolveBaseServers(config: Config): McpServersResult {
+  const file = readConfigFile(resolveConfigPath(config.path))
+  const inline = partitionServers(config.mcpServers ?? {})
+  return {
+    servers: mergeServers(inline.servers, file.servers),
+    problems: [
+      ...file.problems,
+      ...inline.problems.map(problem => `composition entry: ${problem}`),
+    ],
+  }
 }
 
 /**
@@ -152,7 +166,17 @@ export function resolveBaseServers(config: Config): Record<string, McpServerDefi
 export async function apply(ctx: Context, config: Config): Promise<void> {
   const base = resolveBaseServers(config)
   const mounted = new Map<string, Mount>()
-  let source = (): McpServersSection => ({ servers: base })
+  let source = (): McpServersSection => ({ servers: base.servers })
+
+  // 同一条问题只报一次：启动时首次收敛会跑多遍（installSection 的 attach 一次、这里
+  // 一次），逐条刷屏会把真正有用的诊断淹掉。
+  const reported = new Set<string>()
+  const report = (problem: string): void => {
+    if (reported.has(problem)) return
+    reported.add(problem)
+    ctx.logger.error(problem)
+  }
+  for (const problem of base.problems) report(problem)
 
   // 在任何 await 之前注册：即使首次挂载失败，本插件创建过的行也都会被拆掉。
   ctx.effect(() => () => {
@@ -169,19 +193,15 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
   // 写入与重新挂载都串到同一条 promise 链上，因此两次设置提交不可能交错执行各自
   // 的 remove/create 交换。
   let queue: Promise<void> = Promise.resolve()
-  let lastFailure: string | undefined
   const converge = (): void => {
     queue = queue.then(async () => {
-      const { servers } = source()
-      assertServers(servers)
+      // 设置文档也可能被手工改坏（validate 只挡得住经由本插件写入的值），所以这里
+      // 同样逐条过滤，而不是把整份清单判为不可用。
+      const { servers, problems } = partitionServers(source().servers)
+      for (const problem of problems) report(problem)
       await reconcile(ctx, mounted, servers)
-      lastFailure = undefined
     }).catch((error: unknown) => {
-      const message = error instanceof Error ? error.message : String(error)
-      // 同一条失败只报一次：某次改不动的内容，不会在后续每次收敛时反复刷日志。
-      if (message === lastFailure) return
-      lastFailure = message
-      ctx.logger.error(`mcp-servers: ${message}`)
+      report(`mcp-servers: ${error instanceof Error ? error.message : String(error)}`)
     })
   }
 
@@ -190,7 +210,7 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
       ctx,
       MCP_SERVERS_SETTINGS_NAMESPACE,
       McpServersSchema,
-      { servers: base },
+      { servers: base.servers },
       {
         setSource: (current) => { source = current },
         validate: (value) => { assertServers(value.servers) },

@@ -79,26 +79,69 @@ export function resolveTransport(definition: McpServerDefinition): McpTransport 
     : 'stdio'
 }
 
+/** 一次服务清单读取或合并的结果：能挂载的服务，以及全部被跳过的原因。 */
+export interface McpServersResult {
+  /** 通过挂载检查、可以交给 bridge 的服务。 */
+  servers: Record<string, McpServerDefinition>
+  /** 每条被跳过条目的原因，按发现顺序排列；被跳过的条目不会进入 `servers`。 */
+  problems: string[]
+}
+
 /**
- * 拒绝任何挂载不起来的服务清单。名称必须满足 bridge 的名称空间语法，每条定义必须
- * 带上其传输方式所需的字段。它挂在设置的 `validate` 钩子上，因此被拒的值在写入时
- * 就失败，而不是拖到下一次挂载。
+ * 报出一条定义无法挂载的原因。
+ * @param name - 服务名称空间。
+ * @param definition - 待检查的定义。
+ * @returns 原因描述；可以挂载时返回 undefined。
+ */
+function describeServerProblem(name: string, definition: McpServerDefinition): string | undefined {
+  if (!SERVER_NAME_PATTERN.test(name)) {
+    return `mcp-servers: server name "${name}" must match ${String(SERVER_NAME_PATTERN)}`
+  }
+  const transport = resolveTransport(definition)
+  if (transport === 'stdio' && (definition.command ?? '') === '') {
+    return `mcp-servers: server "${name}" uses stdio and requires a command`
+  }
+  if (transport === 'streamable-http' && (definition.url ?? '') === '') {
+    return `mcp-servers: server "${name}" uses streamable-http and requires a url`
+  }
+  return undefined
+}
+
+/**
+ * 逐条检查服务定义，把能挂载的和不能挂载的分开。
+ *
+ * 注册表处理的是**用户可编辑的数据**，不是组合配置：一条读不懂或挂不起来的条目，正确
+ * 的处理是"报告并跳过"。若让它抛错，harness 会连同启动一起失败——用户也就失去了修它
+ * 的手段（设置页面根本打不开）。
  * @param servers - 待检查的服务清单。
- * @throws {Error} 指出出问题的服务名与缺失的字段。
+ * @returns 能挂载的服务，以及每条被跳过条目的原因。
+ */
+export function partitionServers(servers: Record<string, McpServerDefinition>): McpServersResult {
+  const usable: Record<string, McpServerDefinition> = {}
+  const problems: string[] = []
+  for (const [name, definition] of Object.entries(servers)) {
+    const problem = describeServerProblem(name, definition)
+    if (problem !== undefined) {
+      problems.push(problem)
+      continue
+    }
+    usable[name] = definition
+  }
+  return { servers: usable, problems }
+}
+
+/**
+ * 拒绝任何挂载不起来的服务清单。
+ *
+ * 这是设置命名空间的 `validate` 钩子：写入时用户就在场、可以立刻改正，所以这里直接
+ * 拒绝这次写入，而不是把它存下来留到下次挂载才出问题。与 {@link partitionServers}
+ * 的区别正是"用户在不在场"。
+ * @param servers - 待检查的服务清单。
+ * @throws {Error} 指出第一个出问题的服务与原因。
  */
 export function assertServers(servers: Record<string, McpServerDefinition>): void {
-  for (const [name, definition] of Object.entries(servers)) {
-    if (!SERVER_NAME_PATTERN.test(name)) {
-      throw new Error(`mcp-servers: server name "${name}" must match ${String(SERVER_NAME_PATTERN)}`)
-    }
-    const transport = resolveTransport(definition)
-    if (transport === 'stdio' && (definition.command ?? '') === '') {
-      throw new Error(`mcp-servers: server "${name}" uses stdio and requires a command`)
-    }
-    if (transport === 'streamable-http' && (definition.url ?? '') === '') {
-      throw new Error(`mcp-servers: server "${name}" uses streamable-http and requires a url`)
-    }
-  }
+  const [problem] = partitionServers(servers).problems
+  if (problem !== undefined) throw new Error(problem)
 }
 
 /**
@@ -145,44 +188,60 @@ export function resolveConfigPath(path: string | undefined): string {
   return path === undefined || path === '' ? join(resolveDshHome(), MCP_CONFIG_FILENAME) : path
 }
 
+/** 取一条错误的可读说明，用于诊断信息。 */
+function describeError(error: unknown): string {
+  return error instanceof Error ? error.message : String(error)
+}
+
 /**
- * 从 `mcp.json` 文档里读出服务映射。文件不存在时返回空清单，这样从未写过该文件的
- * 部署组合结果与之前完全一致；但文件存在而结构不对时会直接报错，因为那是用户刻意
- * 编写的配置，不是可选文件。
+ * 从 `mcp.json` 文档里读出服务清单。
+ *
+ * 文件不存在是最常见的情况，贡献零个服务。文件存在但读不了、JSON 坏了、结构不对，或
+ * 其中某条定义挂不起来时，问题会被收集到 `problems` 里，受影响的条目被跳过——**但绝不
+ * 抛错**。
+ *
+ * 这一点是刻意的：这个文件是用户手写的可编辑数据。一个漏掉的逗号若能让 harness 启动
+ * 失败，用户就同时失去了修它的手段——设置页面也打不开了。所以这里只报告。
  * @param path - 解析后的 `mcp.json` 路径。
- * @returns `mcpServers` 映射；文件不存在时为空对象。
- * @throws {Error} 文件存在却没有一个对象形式的 `mcpServers` 映射时。
+ * @returns 文件中可用（且逐条通过挂载检查）的服务，以及发现的问题。
  */
-export function readConfigFile(path: string): Record<string, McpServerDefinition> {
+export function readConfigFile(path: string): McpServersResult {
   let text: string
   try {
     text = readFileSync(path, 'utf8')
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return {}
-    throw new Error(`mcp-servers: cannot read ${path}`, { cause: error })
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return { servers: {}, problems: [] }
+    return { servers: {}, problems: [`mcp-servers: cannot read ${path}: ${describeError(error)}`] }
   }
   let document: unknown
   try {
     document = JSON.parse(text)
   } catch (error) {
-    throw new Error(`mcp-servers: ${path} is not valid JSON`, { cause: error })
+    return { servers: {}, problems: [`mcp-servers: ${path} is not valid JSON: ${describeError(error)}`] }
   }
   if (typeof document !== 'object' || document === null || Array.isArray(document)) {
-    throw new Error(`mcp-servers: ${path} must contain a JSON object`)
+    return { servers: {}, problems: [`mcp-servers: ${path} must contain a JSON object`] }
   }
-  const servers = (document as Record<string, unknown>)[MCP_CONFIG_SERVERS_KEY]
-  if (servers === undefined) return {}
-  if (typeof servers !== 'object' || servers === null || Array.isArray(servers)) {
-    throw new Error(`mcp-servers: ${path} must carry "${MCP_CONFIG_SERVERS_KEY}" as an object`)
+  const declared = (document as Record<string, unknown>)[MCP_CONFIG_SERVERS_KEY]
+  if (declared === undefined) return { servers: {}, problems: [] }
+  if (typeof declared !== 'object' || declared === null || Array.isArray(declared)) {
+    return {
+      servers: {},
+      problems: [`mcp-servers: ${path} must carry "${MCP_CONFIG_SERVERS_KEY}" as an object`],
+    }
   }
-  return servers as Record<string, McpServerDefinition>
+  const { servers, problems } = partitionServers(declared as Record<string, McpServerDefinition>)
+  return { servers, problems: problems.map(problem => `${path}: ${problem}`) }
 }
 
 /**
  * 把配置行里的内联服务合并到从 `mcp.json` 读到的服务之上。同名时内联条目胜出，因此
  * 部署可以覆盖共享文件里的内容而不必改文件。
- * @param inline - 该配置行自己的 `mcpServers`，可能为空。
- * @param file - 从配置路径读到的服务。
+ *
+ * 两侧都应先经过 {@link partitionServers}：这样一条读不懂的内联条目不会顶掉文件里
+ * 同名且完好的那条。
+ * @param inline - 该配置行自己已过滤过的 `mcpServers`，可能为空。
+ * @param file - 从配置路径读到的、已过滤过的服务。
  * @returns 注册时解析所依据的基础服务清单。
  */
 export function mergeServers(

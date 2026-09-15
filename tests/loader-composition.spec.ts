@@ -160,14 +160,22 @@ describe('真实 Loader 组合', () => {
     expect(entryNames(ctx)).not.toContain(MCP_CLIENT)
   })
 
-  it('对挂载不起来的服务直接报错', async () => {
-    await expect(loadComposition([
+  // 行为在 issue #2 修复后改变：坏条目只报告并跳过，不再让整棵插件树加载失败。
+  // 更完整的容错用例见 tests/config-resilience.spec.ts。
+  it('组合配置里的坏条目被跳过，插件照常激活', async () => {
+    const { ctx, mounted } = await loadComposition([
       `- name: '${PLUGIN}'`,
       '  config:',
       '    mcpServers:',
       '      bad name:',
       '        command: x',
+      '      good:',
+      '        command: good-server',
       '',
-    ].join('\n'))).rejects.toThrow(/must match/)
+    ].join('\n'))
+
+    expect(mounted).toEqual([expect.objectContaining({ serverName: 'good', command: 'good-server' })])
+    const plugin = [...ctx.loader.entries()].find(entry => entry.options.name === PLUGIN)
+    expect(plugin?.fiber?.state).toBe(2)
   })
 })
