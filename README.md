@@ -148,7 +148,7 @@ dsh web --patch "$PWD/examples/mcp-servers.patch.yml"
 | 文件不存在 | 贡献零个服务，不算问题 |
 | JSON 语法错误 | 报告带行列位置的解析错误，文件层整体不贡献服务，其余层次照常 |
 | 结构不对（不是对象、`mcpServers` 不是对象） | 报告并跳过文件层 |
-| 单条定义挂不起来（名称非法、stdio 缺 `command`、HTTP 缺 `url`） | 只跳过那一条，同文件的其他条目照常挂载 |
+| 单条定义挂不起来（名称非法、stdio 缺 `command`、HTTP 缺 `url`、`transport` 取值不在枚举内） | 只跳过那一条，同文件的其他条目照常挂载 |
 
 同一条规则也适用于组合行里的内联 `mcpServers`。**唯一的例外是设置页面**：那里写入时用户就在场、可以立刻改正，所以非法值会被直接拒绝写入，而不是存下来。
 
@@ -286,7 +286,7 @@ pnpm run typecheck
 
 ## 测试覆盖了什么
 
-`pnpm test`：**63 个用例 / 7 个文件，全部通过**。
+`pnpm test`：**65 个用例 / 7 个文件，全部通过**。
 
 - 真实 Cordis Loader 组合：每个启用的服务挂出一条配置逐字段正确的 bridge 行；停用服务不挂载；被挂载的行永不写进引导文件；卸载后全部移除。
 - 真实 profile loader 把本包当 bundle 组合——这正是 `dsh plugin --profile web add <path>` 能一次装好的原因。

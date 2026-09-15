@@ -141,6 +141,18 @@ describe('partitionServers', () => {
   it('全部条目都可用时不产生任何问题', () => {
     expect(partitionServers({ a: { command: 'x' } })).toEqual({ servers: { a: { command: 'x' } }, problems: [] })
   })
+
+  // 来自 JSON 的值不受类型系统约束；枚举外的传输方式必须在这里被拦下，否则它会走到
+  // 设置命名空间的 schema 才炸，表现为设置页面静默不可用。
+  it('拦下枚举外的传输方式，并给出可操作的原因', () => {
+    const result = partitionServers({
+      sse: { transport: 'sse' as never, url: 'http://x/mcp' },
+    })
+    expect(result.servers).toEqual({})
+    expect(result.problems).toEqual([
+      'mcp-servers: server "sse" has unknown transport "sse"; use "stdio" or "streamable-http"',
+    ])
+  })
 })
 
 describe('readConfigFile', () => {

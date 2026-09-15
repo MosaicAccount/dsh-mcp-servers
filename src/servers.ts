@@ -97,6 +97,14 @@ function describeServerProblem(name: string, definition: McpServerDefinition): s
   if (!SERVER_NAME_PATTERN.test(name)) {
     return `mcp-servers: server name "${name}" must match ${String(SERVER_NAME_PATTERN)}`
   }
+  // 这个值来自 JSON，类型系统看不到它。枚举外的取值（其他 MCP 客户端常见的 "sse"）
+  // 必须在这里就被拦下：让它继续走下去，会在设置命名空间的 schema 那一步炸掉
+  // ——那时表现为设置页面静默不可用，比一条明确的报告难查得多。
+  const declared: unknown = definition.transport
+  if (declared !== undefined && declared !== 'stdio' && declared !== 'streamable-http') {
+    return `mcp-servers: server "${name}" has unknown transport ${JSON.stringify(declared)}; `
+      + 'use "stdio" or "streamable-http"'
+  }
   const transport = resolveTransport(definition)
   if (transport === 'stdio' && (definition.command ?? '') === '') {
     return `mcp-servers: server "${name}" uses stdio and requires a command`

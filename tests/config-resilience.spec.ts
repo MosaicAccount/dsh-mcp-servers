@@ -151,6 +151,26 @@ describe('用户可编辑配置出问题时', () => {
     ])
   })
 
+  // 枚举外的传输方式若被放行，会一路走到设置命名空间的 schema 才炸，表现为设置页面
+  // 静默不可用。这里钉住它在更早的地方就被报告并跳过。
+  it('枚举外的传输方式被拦下，不会拖垮同一文件里的好条目', async () => {
+    const partial = JSON.stringify({
+      mcpServers: {
+        good: { command: 'good-server' },
+        sse: { transport: 'sse', url: 'http://127.0.0.1:9/mcp' },
+      },
+    })
+
+    const { ctx, mounted } = await boot(partial, '')
+
+    expect(mounted).toEqual([
+      expect.objectContaining({ serverName: 'good', command: 'good-server' }),
+    ])
+    expect(entryNames(ctx)).toContain(PLUGIN)
+    const plugin = [...ctx.loader.entries()].find(entry => entry.options.name === PLUGIN)
+    expect(plugin?.fiber?.state).toBe(2)
+  })
+
   it('文件结构正确时行为不变：文件层与组合层都生效', async () => {
     const good = JSON.stringify({ mcpServers: { fromFile: { command: 'file-server' } } })
 
