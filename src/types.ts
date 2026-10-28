@@ -1,6 +1,8 @@
 /**
- * 服务注册表的存储词汇：一台外部 Model Context Protocol 服务，以及容纳全部已配置
- * 服务的设置段。纯类型，无运行时代码。
+ * 服务注册表的存储词汇：一台外部 Model Context Protocol 服务。纯类型，无运行时代码。
+ *
+ * 0.2.x 起设置段就是本插件 Loader 条目的 Config schema（命名空间 = 条目 id），
+ * 不再是独立的 `mcp-servers` 设置文档；可写层是其中的 `mcpServers` 字典。
  *
  * @module dsh-mcp-servers
  */
@@ -10,7 +12,7 @@ export type McpTransport = 'stdio' | 'streamable-http'
 
 /**
  * 一条 MCP 服务定义，写法与组合条目、`mcp.json` 文件或用户编辑一致。
- * `servers` 里的键就是这个服务的名称空间——也就是
+ * `mcpServers` 里的键就是这个服务的名称空间——也就是
  * `mcp__<serverName>__<tool>` 里的 `<serverName>`——所以这里不再重复。
  */
 export interface McpServerDefinition {
@@ -32,10 +34,4 @@ export interface McpServerDefinition {
   headers?: Record<string, string>
   /** 单次工具调用超时（毫秒）；缺省使用 bridge 的默认值。 */
   toolCallTimeoutMs?: number
-}
-
-/** `mcp-servers` 设置段：全部已配置服务，按名称空间索引。 */
-export interface McpServersSection {
-  /** 已配置的服务，以其工具发布所用的名称空间为键。 */
-  servers: Record<string, McpServerDefinition>
 }

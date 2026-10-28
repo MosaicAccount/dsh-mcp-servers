@@ -1,19 +1,24 @@
 /**
- * 由 `mcp-servers` 设置 scope 派生的服务清单状态。Host 始终是唯一权威：每次编辑都
- * 通过 scope 写入，页面则从写入后的快照重新渲染，因此被拒绝或被版本栅栏挡下的写入
- * 展示的是真正存下来的值，而不是表单刚才试图保存的值。
+ * 由 `mcp-servers` 条目 Config 段派生的服务清单状态。Host 始终是唯一权威：每次编辑
+ * 都通过 `ConfigForm` 写入，页面则从写入后的快照重新渲染，因此被拒绝或被版本栅栏挡
+ * 下的写入展示的是真正存下来的值，而不是表单刚才试图保存的值。
+ *
+ * 0.2.x 里设置命名空间就是 Host 的 Loader 条目 id，页面通过 `ctx.configForms` 拿到
+ * 该条目的表单；唯一可写层是 volatile 的 `mcpServers`。Host 是否接受一次写入，仍以
+ * 写后快照里那一层的实际内容为准。
  *
  * @module dsh-mcp-servers/client
  */
 
 import { createSnapshotStore, type SnapshotStore } from '@deepseek-ai/dsh-client-store'
 import type { SettingsPathOpView } from '@deepseek-ai/dsh-api-remotes/client'
-import type { SettingsScope } from '@deepseek-ai/dsh-client-ui-settings/client'
+import type { ConfigForm } from '@deepseek-ai/dsh-client-ui-settings/client'
 import {
   resolveTransport,
   serverTarget,
   type McpServerDefinition,
-  type McpServersSection,
+  type McpServerSource,
+  type McpServersConfig,
   type McpTransport,
 } from './servers.ts'
 
@@ -35,6 +40,10 @@ export interface McpServerRow {
   readonly transport: McpTransport
   /** 该行摘要展示的命令行或端点。 */
   readonly target: string
+  /** 该条目的来源层；只有 `own` 可以从本页编辑。 */
+  readonly source: McpServerSource
+  /** 该行是否允许编辑/删除。 */
+  readonly editable: boolean
   /** 该条目是被用户层覆盖的，而不是由部署组合出来的。 */
   readonly overridden: boolean
 }
@@ -54,13 +63,13 @@ export interface McpServersState {
 }
 
 /**
- * 读取某个原始设置层的 `servers` 映射。
+ * 读取某个原始层（快照的用户层）的 `mcpServers` 映射。
  * @param layer - 形状未知的原始用户层。
  * @returns 服务映射；该层未携带时返回空对象。
  */
-function serverMap(layer: unknown): Record<string, unknown> {
+function userServerMap(layer: unknown): Record<string, unknown> {
   if (typeof layer !== 'object' || layer === null || Array.isArray(layer)) return {}
-  const servers = (layer as Record<string, unknown>).servers
+  const servers = (layer as Record<string, unknown>).mcpServers
   return typeof servers === 'object' && servers !== null && !Array.isArray(servers)
     ? servers as Record<string, unknown>
     : {}
@@ -97,13 +106,13 @@ export class McpServersStore {
   private following: (() => void) | undefined
 
   /**
-   * @param scope - 已绑定的 `mcp-servers` 设置 scope。
+   * @param form - `mcp-servers` Loader 条目的设置表单。
    */
-  constructor(private readonly scope: SettingsScope<McpServersSection>) {}
+  constructor(private readonly form: ConfigForm<McpServersConfig>) {}
 
-  /** 开始跟随绑定的 scope（幂等），并发布它当前的答案。 */
+  /** 开始跟随绑定的条目表单（幂等），并发布它当前的答案。 */
   load(): void {
-    this.following ??= this.scope.subscribe(() => { this.derive() })
+    this.following ??= this.form.subscribe(() => { this.derive() })
     this.derive()
   }
 
@@ -117,11 +126,11 @@ export class McpServersStore {
   async save(name: string, definition: McpServerDefinition, previousName?: string): Promise<void> {
     const ops: SettingsPathOpView[] = []
     if (previousName !== undefined && previousName !== name) {
-      ops.push({ op: 'unset', path: ['servers', previousName] })
+      ops.push({ op: 'unset', path: ['mcpServers', previousName] })
     }
     // 存储态定义按构造就是 JSON 对象——每个字段都是字符串、数字、布尔、字符串数组
     // 或字符串映射——只是接口上的可选成员无法向线上类型表达这一点。
-    ops.push({ op: 'set', path: ['servers', name], value: definition as unknown as SettingsOpValue })
+    ops.push({ op: 'set', path: ['mcpServers', name], value: definition as unknown as SettingsOpValue })
     await this.write(ops, name, definition)
   }
 
@@ -131,10 +140,10 @@ export class McpServersStore {
    * @returns 写入完成并回读之后才 settle。
    */
   async remove(name: string): Promise<void> {
-    await this.write([{ op: 'unset', path: ['servers', name] }], name, undefined)
+    await this.write([{ op: 'unset', path: ['mcpServers', name] }], name, undefined)
   }
 
-  /** 停止跟随该 scope。 */
+  /** 停止跟随该条目表单。 */
   dispose(): void {
     this.following?.()
     this.following = undefined
@@ -153,9 +162,9 @@ export class McpServersStore {
   ): Promise<void> {
     this.store.update((state) => { state.saving = true; state.error = null })
     try {
-      // 不使用固定版本栅栏：一行的编辑与其他行彼此独立，而 scope 本身已经用它所
-      // 见到的最新版本做了栅栏。
-      await this.scope.mutate(ops)
+      // 不使用固定版本栅栏：一行的编辑与其他行彼此独立，而表单本身已经用它所见到
+      // 的最新版本做了栅栏。
+      await this.form.mutate(ops)
     } finally {
       this.store.update((state) => { state.saving = false })
     }
@@ -171,15 +180,15 @@ export class McpServersStore {
    * @returns 存储值与要求是否一致。
    */
   private settled(name: string, expected: McpServerDefinition | undefined): boolean {
-    const section = this.scope.getSnapshot().value
-    const stored = section === undefined ? undefined : section.servers[name]
+    const config = this.form.getSnapshot().value
+    const stored = config?.mcpServers?.[name]
     if (expected === undefined) return stored === undefined
     return stored !== undefined && mountSignature(stored) === mountSignature(expected)
   }
 
-  /** 发布绑定 scope 当前的答案。 */
+  /** 发布绑定表单当前的答案。 */
   private derive(): void {
-    const snapshot = this.scope.getSnapshot()
+    const snapshot = this.form.getSnapshot()
     if (snapshot.status === 'unavailable') {
       this.store.update((state) => {
         state.status = 'unavailable'
@@ -193,21 +202,32 @@ export class McpServersStore {
       this.store.update((state) => { state.status = 'loading'; state.error = null })
       return
     }
-    const servers = snapshot.value?.servers ?? {}
-    const overridden = serverMap(snapshot.user)
-    const rows: McpServerRow[] = Object.entries(servers)
-      .map(([name, definition]) => ({
+    const servers = snapshot.value?.mcpServers ?? {}
+    const composed = snapshot.value?.composedServers
+    const overridden = userServerMap(snapshot.user)
+    // 页面把四层都渲染出来。同名时以**真正在跑**的那一层为准：部署插入的 bridge 行
+    // 优先于页面写入的条目（Host 也不会重复挂载后者），然后是文件层与遗留层。
+    const rows = new Map<string, McpServerRow>()
+    const put = (name: string, definition: McpServerDefinition, source: McpServerSource): void => {
+      if (rows.has(name)) return
+      rows.set(name, {
         name,
         definition,
         enabled: definition.enabled !== false,
         transport: resolveTransport(definition),
         target: serverTarget(definition),
-        overridden: Object.hasOwn(overridden, name),
-      }))
-      .sort((left, right) => left.name.localeCompare(right.name))
+        source,
+        editable: source === 'own',
+        overridden: source === 'own' && Object.hasOwn(overridden, name),
+      })
+    }
+    for (const [name, definition] of Object.entries(composed?.deployment ?? {})) put(name, definition, 'deployment')
+    for (const [name, definition] of Object.entries(servers)) put(name, definition, 'own')
+    for (const [name, definition] of Object.entries(composed?.file ?? {})) put(name, definition, 'file')
+    for (const [name, definition] of Object.entries(composed?.legacy ?? {})) put(name, definition, 'legacy')
     this.store.update((state) => {
       state.status = 'ready'
-      state.rows = rows
+      state.rows = [...rows.values()].sort((left, right) => left.name.localeCompare(right.name))
       state.writable = snapshot.writable
       state.error = null
     })

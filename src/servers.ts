@@ -1,15 +1,17 @@
 /**
- * 存储态的服务定义：它们解析所用的设置 schema、挂载前必须通过的检查、被投影成的
- * bridge 配置，以及作为基础层的 `mcp.json` 文件。
+ * 存储态的服务定义：单条定义与一层服务清单的 schema、挂载前必须通过的检查、被投影成
+ * 的 bridge 配置，以及作为基础层的 `mcp.json` 文件。
  *
  * @module dsh-mcp-servers
  */
 
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
+// 纯类型导入：volatile 配置字段在运行期是个稳定引用，这里只描述它的形状。
+import type { Volatile } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
 import { resolveDshHome } from './home.ts'
-import type { McpServerDefinition, McpServersSection, McpTransport } from './types.ts'
+import type { McpServerDefinition, McpTransport } from './types.ts'
 
 /**
  * 服务名的合法字符。与 bridge 自己的 `SERVER_NAME_PATTERN` 完全一致：这个名字既是
@@ -36,10 +38,32 @@ export const McpServerSchema: z<McpServerDefinition> = z.object({
   toolCallTimeoutMs: z.number().step(1).min(1),
 })
 
-/** `mcp-servers` 命名空间的设置 schema。 */
-export const McpServersSchema: z<McpServersSection> = z.object({
-  servers: z.dict(McpServerSchema).default({}),
-})
+/**
+ * 一层的服务清单：运行期是 volatile 配置引用，纯函数调用方（组合、测试）也可能直接
+ * 给出普通对象。
+ */
+export type ServersLayer =
+  | Volatile<Record<string, McpServerDefinition>>
+  | Record<string, McpServerDefinition>
+  | undefined
+
+/**
+ * 读出一层服务清单。
+ *
+ * 0.2.x 里可写层是 volatile 字段：Loader 把新值就地写进同一个引用，插件必须通过
+ * `.get()` 读当前快照，而不是把 `apply()` 收到的对象当成值。纯函数调用方（组合
+ * 配置、测试）直接传普通对象，两种形状都要接受；缺席的层贡献零个服务。
+ * @param layer - 一层配置：volatile 引用、普通映射或 undefined。
+ * @returns 该层当前的服务映射。
+ */
+export function readServers(layer: ServersLayer): Record<string, McpServerDefinition> {
+  if (layer === undefined) return {}
+  if (typeof (layer as Volatile<unknown>).get === 'function') {
+    return (layer as Volatile<Record<string, McpServerDefinition>>).get() as unknown as
+      Record<string, McpServerDefinition>
+  }
+  return layer as Record<string, McpServerDefinition>
+}
 
 /** 单个 stdio 服务的 bridge 配置，即 `@deepseek-ai/dsh-mcp-client` 接受的形式。 */
 export interface McpClientStdioConfig {
@@ -97,9 +121,10 @@ function describeServerProblem(name: string, definition: McpServerDefinition): s
   if (!SERVER_NAME_PATTERN.test(name)) {
     return `mcp-servers: server name "${name}" must match ${String(SERVER_NAME_PATTERN)}`
   }
-  // 这个值来自 JSON，类型系统看不到它。枚举外的取值（其他 MCP 客户端常见的 "sse"）
-  // 必须在这里就被拦下：让它继续走下去，会在设置命名空间的 schema 那一步炸掉
-  // ——那时表现为设置页面静默不可用，比一条明确的报告难查得多。
+  // 这个值来自 JSON 或用户写入，类型系统看不到它。枚举外的取值（其他 MCP 客户端常见的
+  // "sse"）必须在这里就被拦下：让它继续走下去，会在 Loader 校验条目 Config 那一步被
+  // 静默丢弃（volatile 写入失败只留一条警告），表现为设置页面里"保存了却没生效"，
+  // 比一条明确的报告难查得多。
   const declared: unknown = definition.transport
   if (declared !== undefined && declared !== 'stdio' && declared !== 'streamable-http') {
     return `mcp-servers: server "${name}" has unknown transport ${JSON.stringify(declared)}; `
@@ -136,20 +161,6 @@ export function partitionServers(servers: Record<string, McpServerDefinition>): 
     usable[name] = definition
   }
   return { servers: usable, problems }
-}
-
-/**
- * 拒绝任何挂载不起来的服务清单。
- *
- * 这是设置命名空间的 `validate` 钩子：写入时用户就在场、可以立刻改正，所以这里直接
- * 拒绝这次写入，而不是把它存下来留到下次挂载才出问题。与 {@link partitionServers}
- * 的区别正是"用户在不在场"。
- * @param servers - 待检查的服务清单。
- * @throws {Error} 指出第一个出问题的服务与原因。
- */
-export function assertServers(servers: Record<string, McpServerDefinition>): void {
-  const [problem] = partitionServers(servers).problems
-  if (problem !== undefined) throw new Error(problem)
 }
 
 /**
@@ -240,6 +251,108 @@ export function readConfigFile(path: string): McpServersResult {
   }
   const { servers, problems } = partitionServers(declared as Record<string, McpServerDefinition>)
   return { servers, problems: problems.map(problem => `${path}: ${problem}`) }
+}
+
+/**
+ * 只读的服务来源：不归设置页面写、但确实参与生效清单的层。
+ *
+ * 设置页面只编辑 `mcpServers`；这些层由 Host 扫描后投影给页面，让"profile 里已经配好
+ * 的 MCP 服务"在页面上看得见（只读），而不是像以前那样完全消失。
+ */
+export interface ComposedServers {
+  /**
+   * 部署在 profile patch / `cordis.yml` 里直接插入的 `@deepseek-ai/dsh-mcp-client` 行，
+   * 按 `serverName` 索引。
+   */
+  deployment: Record<string, McpServerDefinition>
+  /** `mcp.json` 文件层提供的服务。 */
+  file: Record<string, McpServerDefinition>
+  /** 0.1.x 遗留 `servers` 层提供的服务（由旧 `settings.yaml` 导入）。 */
+  legacy: Record<string, McpServerDefinition>
+}
+
+/** 只读投影层的 schema；字段与设置页面收到的线上形状一一对应。 */
+export const ComposedServersSchema: z<ComposedServers> = z.object({
+  deployment: z.dict(McpServerSchema).default({}),
+  file: z.dict(McpServerSchema).default({}),
+  legacy: z.dict(McpServerSchema).default({}),
+})
+
+/** 空的只读投影。 */
+export function emptyComposedServers(): ComposedServers {
+  return { deployment: {}, file: {}, legacy: {} }
+}
+
+/** 从任意 JSON 值里取字符串，取不到就返回 undefined。 */
+function text(value: unknown): string | undefined {
+  return typeof value === 'string' ? value : undefined
+}
+
+/** 从任意 JSON 值里取字符串列表，过滤掉非字符串项。 */
+function textList(value: unknown): string[] | undefined {
+  if (!Array.isArray(value)) return undefined
+  return value.filter((item): item is string => typeof item === 'string')
+}
+
+/** 从任意 JSON 值里取字符串映射，过滤掉非字符串项。 */
+function textDict(value: unknown): Record<string, string> | undefined {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return undefined
+  const result: Record<string, string> = {}
+  for (const [key, item] of Object.entries(value)) {
+    if (typeof item === 'string') result[key] = item
+  }
+  return result
+}
+
+/**
+ * 把一条 bridge 配置（部署行里 `@deepseek-ai/dsh-mcp-client` 的 config）反投影成存储
+ * 态定义，供设置页面只读展示。
+ *
+ * 部署行的 config 是用户手写的组合数据，可能含 `!!js` 表达式、缺字段或类型不对，
+ * 所以这里逐字段收窄；`serverName` 缺失或非法时返回 undefined（这条行不属于可展示的
+ * 服务）。
+ * @param config - 部署行的配置值。
+ * @returns 存储态定义；无法当作 MCP 服务展示时返回 undefined。
+ */
+export function definitionFromBridgeConfig(config: unknown): McpServerDefinition | undefined {
+  if (typeof config !== 'object' || config === null || Array.isArray(config)) return undefined
+  const record = config as Record<string, unknown>
+  const serverName = text(record.serverName)
+  if (serverName === undefined || !SERVER_NAME_PATTERN.test(serverName)) return undefined
+  const timeout = record.toolCallTimeoutMs
+  const toolCallTimeoutMs = typeof timeout === 'number' && Number.isSafeInteger(timeout) && timeout > 0
+    ? timeout
+    : undefined
+  const shared = toolCallTimeoutMs === undefined ? {} : { toolCallTimeoutMs }
+  // 部署行通常显式写 transport；省略时按 bridge 同样的规则推断，别让一条手写行消失。
+  const transport = record.transport === 'stdio' || record.transport === 'streamable-http'
+    ? record.transport
+    : text(record.url) !== undefined && text(record.url) !== '' && (text(record.command) ?? '') === ''
+      ? 'streamable-http'
+      : 'stdio'
+  if (transport === 'streamable-http') {
+    const url = text(record.url)
+    if (url === undefined || url === '') return undefined
+    return {
+      enabled: true,
+      transport: 'streamable-http',
+      url,
+      headers: textDict(record.headers) ?? {},
+      ...shared,
+    }
+  }
+  const command = text(record.command)
+  if (command === undefined || command === '') return undefined
+  const cwd = text(record.cwd)
+  return {
+    enabled: true,
+    transport: 'stdio',
+    command,
+    args: textList(record.args) ?? [],
+    env: textDict(record.env) ?? {},
+    ...cwd === undefined || cwd === '' ? {} : { cwd },
+    ...shared,
+  }
 }
 
 /**

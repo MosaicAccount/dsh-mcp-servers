@@ -2,7 +2,7 @@
 
 import { describe, expect, it } from 'vitest'
 import {
-  decodeMcpServersSection,
+  decodeMcpServersConfig,
   definitionFrom,
   draftFrom,
   emptyDraft,
@@ -13,16 +13,20 @@ import {
   validateDraft,
 } from '../src/client/servers.ts'
 
-describe('decodeMcpServersSection', () => {
-  it('读出设置段，并把缺失的 servers 键当作空', () => {
-    expect(decodeMcpServersSection({ servers: { a: { command: 'x' } } })).toEqual({ servers: { a: { command: 'x' } } })
-    expect(decodeMcpServersSection({})).toEqual({ servers: {} })
+describe('decodeMcpServersConfig', () => {
+  it('读出条目 Config 段的 mcpServers 层，并把缺失的键当作空', () => {
+    expect(decodeMcpServersConfig({ mcpServers: { a: { command: 'x' } } }))
+      .toEqual({ mcpServers: { a: { command: 'x' } } })
+    expect(decodeMcpServersConfig({})).toEqual({ mcpServers: {} })
+    // 条目 Config 还带着 path 与旧 servers 层；页面只认 mcpServers。
+    expect(decodeMcpServersConfig({ path: 'mcp.json', servers: { legacy: { command: 'x' } } }))
+      .toEqual({ mcpServers: {} })
   })
 
-  it('拒绝读不出来的设置段', () => {
-    expect(decodeMcpServersSection('nope')).toBeUndefined()
-    expect(decodeMcpServersSection(['nope'])).toBeUndefined()
-    expect(decodeMcpServersSection({ servers: [] })).toBeUndefined()
+  it('拒绝读不出来的条目 Config 段', () => {
+    expect(decodeMcpServersConfig('nope')).toBeUndefined()
+    expect(decodeMcpServersConfig(['nope'])).toBeUndefined()
+    expect(decodeMcpServersConfig({ mcpServers: [] })).toBeUndefined()
   })
 })
 

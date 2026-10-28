@@ -1,14 +1,17 @@
 /**
- * 存储态 MCP 服务定义：传输方式推断、写入被拒时依据的挂载检查、单个挂载行收到的
- * bridge 投影，以及作为基础层的 `mcp.json` 文档。
+ * 存储态 MCP 服务定义：传输方式推断、挂载前的逐条检查、单个挂载行收到的 bridge
+ * 投影、作为基础层的 `mcp.json` 文档，以及 0.2.x 设置段（volatile `mcpServers`
+ * 引用 + 遗留 `servers` 层）的读取。
  */
 
 import { mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
+import { Config, readServers } from '../src/index.ts'
+import type { McpServerDefinition } from '../src/types.ts'
 import {
-  assertServers,
+  definitionFromBridgeConfig,
   mergeServers,
   partitionServers,
   readConfigFile,
@@ -50,27 +53,6 @@ describe('resolveTransport', () => {
   })
 })
 
-describe('assertServers', () => {
-  it('接受一条 stdio 条目和一条 streamable-http 条目', () => {
-    expect(() => {
-      assertServers({ a: { command: 'x' }, b: { url: 'http://x/mcp' } })
-    }).not.toThrow()
-  })
-
-  it('拒绝不符合 bridge 名称空间语法的名称', () => {
-    expect(() => { assertServers({ 'bad name': { command: 'x' } }) }).toThrow(/must match/)
-    expect(() => { assertServers({ ['a'.repeat(33)]: { command: 'x' } }) }).toThrow(/must match/)
-  })
-
-  it('拒绝没有 command 的 stdio 条目', () => {
-    expect(() => { assertServers({ a: {} }) }).toThrow(/requires a command/)
-  })
-
-  it('拒绝没有 url 的 streamable-http 条目', () => {
-    expect(() => { assertServers({ a: { transport: 'streamable-http' } }) }).toThrow(/requires a url/)
-  })
-})
-
 describe('toMcpClientConfig', () => {
   it('投影 stdio 条目，补齐 bridge 默认值且永不因启动失败而拒绝', () => {
     expect(toMcpClientConfig('alpha', { command: 'run', args: ['--x'], env: { A: '1' }, cwd: '/tmp' })).toEqual({
@@ -109,6 +91,51 @@ describe('toMcpClientConfig', () => {
   })
 })
 
+describe('definitionFromBridgeConfig', () => {
+  it('把部署 stdio 行反投影成存储态定义', () => {
+    expect(definitionFromBridgeConfig({
+      transport: 'stdio',
+      serverName: 'dbx',
+      command: 'npx',
+      args: ['-y', 'pkg'],
+      env: { A: '1' },
+      cwd: '/tmp',
+      toolCallTimeoutMs: 5000,
+      failOnStartupError: false,
+    })).toEqual({
+      enabled: true,
+      transport: 'stdio',
+      command: 'npx',
+      args: ['-y', 'pkg'],
+      env: { A: '1' },
+      cwd: '/tmp',
+      toolCallTimeoutMs: 5000,
+    })
+  })
+
+  it('省略 transport 时按 command / url 推断，并忽略非字符串字段', () => {
+    expect(definitionFromBridgeConfig({
+      serverName: 'showdoc',
+      url: 'https://www.showdoc.com.cn/mcp.php',
+      headers: { Authorization: 'Bearer x', bad: 1 },
+    })).toEqual({
+      enabled: true,
+      transport: 'streamable-http',
+      url: 'https://www.showdoc.com.cn/mcp.php',
+      headers: { Authorization: 'Bearer x' },
+    })
+  })
+
+  // 部署行的 config 是手写组合数据：!!js 表达式在解析前是对象，不能让页面拿到半条定义。
+  it('serverName 缺失/非法、或必需字段不是字符串时返回 undefined', () => {
+    expect(definitionFromBridgeConfig(undefined)).toBeUndefined()
+    expect(definitionFromBridgeConfig({ transport: 'stdio', command: 'x' })).toBeUndefined()
+    expect(definitionFromBridgeConfig({ transport: 'stdio', serverName: 'bad name', command: 'x' })).toBeUndefined()
+    expect(definitionFromBridgeConfig({ transport: 'stdio', serverName: 'a', command: { __jsExpr: 'cmd' } })).toBeUndefined()
+    expect(definitionFromBridgeConfig({ transport: 'streamable-http', serverName: 'a' })).toBeUndefined()
+  })
+})
+
 describe('mergeServers', () => {
   it('同名时内联条目胜出', () => {
     expect(mergeServers(
@@ -143,7 +170,7 @@ describe('partitionServers', () => {
   })
 
   // 来自 JSON 的值不受类型系统约束；枚举外的传输方式必须在这里被拦下，否则它会走到
-  // 设置命名空间的 schema 才炸，表现为设置页面静默不可用。
+  // Loader 校验条目 Config 那一步被静默丢弃，表现为设置页面"保存了却没生效"。
   it('拦下枚举外的传输方式，并给出可操作的原因', () => {
     const result = partitionServers({
       sse: { transport: 'sse' as never, url: 'http://x/mcp' },
@@ -152,6 +179,50 @@ describe('partitionServers', () => {
     expect(result.problems).toEqual([
       'mcp-servers: server "sse" has unknown transport "sse"; use "stdio" or "streamable-http"',
     ])
+  })
+})
+
+describe('readServers', () => {
+  it('普通映射原样返回', () => {
+    expect(readServers({ a: { command: 'x' } })).toEqual({ a: { command: 'x' } })
+  })
+
+  it('缺席的层贡献零个服务', () => {
+    expect(readServers(undefined)).toEqual({})
+  })
+
+  // 0.2.x 的 volatile 字段在运行期是稳定引用：Loader 把新值就地写进同一个对象，
+  // 因此每次读取都必须走 .get()，而不是缓存 apply() 时拿到的快照。
+  it('volatile 引用读取当前快照，并跟随就地更新', () => {
+    let current: Record<string, McpServerDefinition> = { a: { command: 'x' } }
+    const layer = { get: () => current }
+    expect(readServers(layer)).toEqual({ a: { command: 'x' } })
+
+    current = { b: { command: 'y' } }
+    expect(readServers(layer)).toEqual({ b: { command: 'y' } })
+  })
+})
+
+describe('Config schema', () => {
+  it('mcpServers 是带默认值的 volatile 引用：缺席时读到一个空映射', () => {
+    const parsed = Config({})
+    expect(parsed.mcpServers).toBeTypeOf('object')
+    expect((parsed.mcpServers as { get?: unknown }).get).toBeTypeOf('function')
+    expect(readServers(parsed.mcpServers)).toEqual({})
+  })
+
+  it('页面写入的条目被 schema 规范化后进入 volatile 层', () => {
+    const parsed = Config({ mcpServers: { alpha: { command: 'alpha-server' } } })
+    expect(readServers(parsed.mcpServers)).toMatchObject({
+      alpha: { command: 'alpha-server', enabled: true },
+    })
+  })
+
+  it('保留 0.1.x 遗留的 servers 层', () => {
+    const parsed = Config({ servers: { legacy: { command: 'legacy-server' } } })
+    expect(readServers(parsed.servers)).toMatchObject({
+      legacy: { command: 'legacy-server' },
+    })
   })
 })
 

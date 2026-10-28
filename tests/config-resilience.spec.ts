@@ -15,11 +15,18 @@ import { pathToFileURL } from 'node:url'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
 import Loader from '@deepseek-ai/cordis-plugin-loader'
+import type { Entry } from '@deepseek-ai/cordis-plugin-loader'
 import Include from '@deepseek-ai/cordis-plugin-include'
 import * as McpServers from '../src/index.ts'
 
 const PLUGIN = 'dsh-mcp-servers'
 const MCP_CLIENT = '@deepseek-ai/dsh-mcp-client'
+
+/** 收集到的一条日志：Loader 与插件都通过同一个 logger 服务报告。 */
+interface CapturedLog {
+  type: string
+  args: unknown[]
+}
 
 let home: string | undefined
 let context: Context | undefined
@@ -42,27 +49,67 @@ function entryNames(ctx: Context): string[] {
   return [...ctx.loader.entries()].map(entry => entry.options.name)
 }
 
+/** 找到组合里挂载本插件的条目，也就是那条 Loader 条目。 */
+function pluginEntry(ctx: Context): Entry {
+  const entry = [...ctx.loader.entries()].find(candidate => candidate.options.name === PLUGIN)
+  if (entry === undefined) throw new Error('the composition did not mount the registry')
+  return entry
+}
+
+/**
+ * 等条件成立。插件的收敛跑在自己的串行队列上，不是 Loader 的 task，所以不能用
+ * `loader.await()` 等它。
+ * @param condition - 轮询条件。
+ */
+async function until(condition: () => boolean): Promise<void> {
+  const deadline = Date.now() + 2000
+  while (!condition()) {
+    if (Date.now() > deadline) throw new Error('timed out waiting for the registry to converge')
+    await new Promise(resolve => setTimeout(resolve, 5))
+  }
+}
+
+/** 匹配指定片段、类型为 error 的日志条数。 */
+function errorCount(logs: CapturedLog[], fragment: string): number {
+  return logs.filter(message => message.type === 'error'
+    && String(message.args[0]).includes(fragment)).length
+}
+
 /**
  * 用指定的 `mcp.json` 内容与组合配置启动一次真实 Loader。
  * @param mcpJson - 写进 <harness home>/mcp.json 的内容；undefined 表示不创建该文件。
  * @param configRows - 配置行下面缩进好的 `config:` 行，含末尾换行。
- * @returns 启动后的上下文，以及 bridge 替身收到的每一份配置。
+ * @returns 启动后的上下文、bridge 替身收到的每一份配置，以及期间的全部日志。
  */
 async function boot(
   mcpJson: string | undefined,
   configRows: string,
-): Promise<{ ctx: Context; mounted: unknown[] }> {
+): Promise<{ ctx: Context; mounted: unknown[]; logs: CapturedLog[] }> {
   if (mcpJson !== undefined) await writeFile(join(home!, 'mcp.json'), mcpJson)
   const configDir = await mkdtemp(join(tmpdir(), 'dsh-mcp-resilience-cfg-'))
   const configPath = join(configDir, 'cordis.yml')
   await writeFile(configPath, [`- name: '${PLUGIN}'`, configRows].join('\n'))
   const mounted: unknown[] = []
+  // bridge 现在是子插件而不是 Loader 行：记录 apply 的那份上下文，用来断言"未改动的
+  // 服务没有被重挂"。
+  const instances: Array<{ config: { serverName: string }; disposed: boolean }> = []
   const bridge = {
     name: 'mcp-client',
-    apply: (_ctx: Context, pluginConfig: unknown) => { mounted.push(pluginConfig) },
+    apply: (bridgeCtx: Context, pluginConfig: unknown) => {
+      mounted.push(pluginConfig)
+      const instance = { config: pluginConfig as { serverName: string }, disposed: false }
+      instances.push(instance)
+      bridgeCtx.effect(() => () => { instance.disposed = true })
+    },
   }
   context = new Context()
   context.baseUrl = pathToFileURL(configDir).href + '/'
+  // 先装日志出口再挂插件，才能连激活期的报告一起看到。
+  const logs: CapturedLog[] = []
+  context.logger.exporter({
+    export: (message) => { logs.push({ type: message.type, args: message.args }) },
+    levels: { default: 3 },
+  })
   await context.plugin(Loader)
   context.loader.builtins.include = Include
   const modules = new Map<string, unknown>([[PLUGIN, McpServers], [MCP_CLIENT, bridge]])
@@ -78,7 +125,7 @@ async function boot(
     config: { path: pathToFileURL(configPath).href },
   })
   await context.loader.await()
-  return { ctx: context, mounted }
+  return { ctx: context, mounted, instances, logs }
 }
 
 const INLINE_ALPHA = [
@@ -180,5 +227,50 @@ describe('用户可编辑配置出问题时', () => {
       expect.objectContaining({ serverName: 'fromFile', command: 'file-server' }),
       expect.objectContaining({ serverName: 'alpha', command: 'alpha-server' }),
     ])
+  })
+})
+
+describe('0.2.x volatile 热更新里出现坏条目时', () => {
+  it('只报告一次并跳过，未改动的好服务继续运行、插件不重挂', async () => {
+    const { ctx, mounted, instances, logs } = await boot(undefined, INLINE_ALPHA)
+    const entry = pluginEntry(ctx)
+    const alpha = instances[0]!
+    expect(alpha.config.serverName).toBe('alpha')
+    expect(mounted).toHaveLength(1)
+
+    // 设置页面写入只改 volatile 层：alpha 原样，外带一条 bridge 名称空间非法的条目。
+    await entry.update({
+      config: {
+        mcpServers: {
+          alpha: { command: 'alpha-server' },
+          'bad name': { command: 'x' },
+        },
+      },
+    }, false, true)
+
+    await until(() => errorCount(logs, 'must match') > 0)
+
+    // 坏条目被报告并跳过：没有多挂任何实例，alpha 还是同一份，插件仍处于 ACTIVE。
+    expect(errorCount(logs, 'must match')).toBe(1)
+    expect(mounted).toHaveLength(1)
+    expect(instances).toHaveLength(1)
+    expect(alpha.disposed).toBe(false)
+    expect(entry.fiber?.state).toBe(2)
+
+    // 再改一次、这条坏条目仍然在：去重集合不会让它再刷一条。
+    await entry.update({
+      config: {
+        mcpServers: {
+          alpha: { command: 'alpha-server' },
+          gamma: { command: 'gamma-server' },
+          'bad name': { command: 'x' },
+        },
+      },
+    }, false, true)
+
+    await until(() => mounted.length === 2)
+    expect(errorCount(logs, 'must match')).toBe(1)
+    expect(mounted[1]).toEqual(expect.objectContaining({ serverName: 'gamma' }))
+    expect(entry.fiber?.state).toBe(2)
   })
 })

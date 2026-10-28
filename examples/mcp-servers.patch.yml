@@ -2,6 +2,7 @@
 #
 # 一行就够了：Node 半边就是这一行的插件，而 Web 外壳的客户端模块系统会发现同一个包上
 # 的 dsh.client 声明并把它的 lib/client.js 提供给页面，因此设置区块不需要第二个条目。
+# 官方 Web 与官方 Desktop 用的是同一套外壳，这份 overlay 对两者都适用。
 #
 # 临时试用（不留痕）：
 #   dsh web --patch "$PWD/examples/mcp-servers.patch.yml"
@@ -9,8 +10,11 @@
 # $DSH_HOME/profiles/<name>/cordis.patch.yml（单个 profile），或
 # $DSH_HOME/cordis.patch.yml（本机所有 profile）。
 #
+# id 必须是 mcp-servers：设置页面拿它当 configForms 命名空间。
+#
 # path 可选，默认 <harness home>/mcp.json；把它指向已有文件即可复用其他 MCP 客户端
-# 维护的服务清单。内联的 mcpServers 会合并在该文件之上，并按名称覆盖。
+# 维护的服务清单。这里的 mcpServers 是"组合层"；设置页面写入的是再上一层的 profile
+# 覆盖，两者按名称合并。
 #
 # 凭据要写在条目自己的 env 里：bridge 在启动 stdio 服务之前，会把环境里名字看起来像
 # 凭据的变量移除。

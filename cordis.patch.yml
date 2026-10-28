@@ -5,14 +5,18 @@
 # `dsh plugin --profile <name> add <spec>` 会在安装后自动把本包追加进那个列表——因为
 # manifest 里声明了 dsh.bundle.patch。
 #
-# 这里插入的行就是本包的 Node 半边。Web 外壳的客户端模块系统会发现同一个包上的
-# dsh.client 声明并把它的 lib/client.js 提供给页面，所以这一行同时也让设置面板有了
-# MCP 页面。
+# 两个官方 profile 走同一条路径：`web` 由 CLI 直接初始化，`desktop` 由 Electron 应用
+# 初始化后再交给 `dsh plugin --profile desktop` 安装。Desktop 只是把同一套 Web 外壳
+# 装进 Electron，因此同一个 dsh.client 声明同时服务两者。
+#
+# 这里插入的行就是本包的 Node 半边，id 必须保持 `mcp-servers`：它同时是设置页面读写
+# 的 configForms 命名空间（tests/manifest-contract.spec.ts 钉住了这条契约）。
 #
 # 这里故意不写 config。服务清单按优先级从低到高来自三处：
-# <harness home>/mcp.json、本行自己的 mcpServers、以及 MCP 设置页面写入的用户覆盖。
-# 想把服务固定在组合里的部署，可以在下面加 config: mcpServers:，或者在自己的
-# cordis.patch.yml 里重述这一行——profile 自己的补丁层应用在所有 bundle 层之后。
+# <harness home>/mcp.json、本条目的 servers 兼容层（0.1.x settings.yaml 导入）、
+# 以及设置页面写入的 mcpServers 层。想把服务固定在组合里的部署，可以在下面加
+# config: mcpServers:，或者在自己的 cordis.patch.yml 里重述这一行——profile 自己的
+# 补丁层应用在所有 bundle 层之后。
 
 - insert:
     - id: mcp-servers

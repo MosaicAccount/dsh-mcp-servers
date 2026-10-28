@@ -13,7 +13,7 @@
 export type McpTransport = 'stdio' | 'streamable-http'
 
 /**
- * 一条存储态的 MCP 服务。`McpServersSection.servers` 的映射键就是该服务的名称
+ * 一条存储态的 MCP 服务。`McpServersConfig.mcpServers` 的映射键就是该服务的名称
  * 空间——也就是 `mcp__<serverName>__<tool>` 里的 `<serverName>`——所以这里不再重复。
  */
 export interface McpServerDefinition {
@@ -37,30 +37,57 @@ export interface McpServerDefinition {
   toolCallTimeoutMs?: number
 }
 
-/** `mcp-servers` 设置段，按服务名称空间索引。 */
-export interface McpServersSection {
-  /** 已配置的服务，以其工具发布所用的名称空间为键。 */
-  servers: Record<string, McpServerDefinition>
+/** 一条服务来自哪一层：只有 `own` 归本页面编辑。 */
+export type McpServerSource = 'own' | 'deployment' | 'file' | 'legacy'
+
+/**
+ * 本页面读写的 `mcp-servers` Loader 条目 Config 段。
+ *
+ * 0.2.x 里设置命名空间就是 Loader 条目 id，条目 Config schema 即设置段。页面编辑其中
+ * 唯一可写（volatile）的 `mcpServers` 层；`composedServers` 是 Host 发布的**只读投影**，
+ * 用来把已经在跑、但不归本页写的服务列出来（部署插入的 bridge 行、`mcp.json` 文件层、
+ * 0.1.x 遗留 `servers` 层）。
+ */
+export interface McpServersConfig {
+  /** 已配置的服务，以其工具发布所用的名称空间为键；页面唯一的可写层。 */
+  mcpServers?: Record<string, McpServerDefinition>
+  /** Host 发布的只读投影层。 */
+  composedServers?: {
+    deployment?: Record<string, McpServerDefinition>
+    file?: Record<string, McpServerDefinition>
+    legacy?: Record<string, McpServerDefinition>
+  }
 }
 
-/** Host 半边提供的设置命名空间；两半之间的连接键。 */
+/**
+ * Host 条目的 Loader id，同时也是浏览器读写设置时使用的命名空间；两半之间的
+ * 连接键。没有挂载该条目的部署不会提供这个命名空间。
+ */
 export const MCP_SERVERS_NAMESPACE = 'mcp-servers'
 
 /** Host 强制的服务名语法；同时也是工具名的名称空间。 */
 export const SERVER_NAME_PATTERN = /^[A-Za-z0-9_-]{1,32}$/
 
 /**
- * 按页面读取的方式接受一个设置段。不是对象、或 `servers` 不是对象的段返回
- * undefined，这样页面渲染的是"缺失"状态，而不是一个只解析了一半的列表。
- * @param section - 线上传来的设置段。
+ * 按页面读取的方式接受一个条目 Config 段。不是对象、或 `mcpServers` 不是对象的段
+ * 返回 undefined，这样页面渲染的是"缺失"状态，而不是一个只解析了一半的列表。
+ * @param section - 线上传来的条目 Config 段。
  * @returns 该设置段；无法读取时返回 undefined。
  */
-export function decodeMcpServersSection(section: unknown): McpServersSection | undefined {
+export function decodeMcpServersConfig(section: unknown): McpServersConfig | undefined {
   if (typeof section !== 'object' || section === null || Array.isArray(section)) return undefined
-  const servers = (section as Record<string, unknown>).servers
-  if (servers === undefined) return { servers: {} }
-  if (typeof servers !== 'object' || servers === null || Array.isArray(servers)) return undefined
-  return { servers: servers as Record<string, McpServerDefinition> }
+  const record = section as Record<string, unknown>
+  const servers = record.mcpServers
+  if (servers !== undefined && (typeof servers !== 'object' || servers === null || Array.isArray(servers))) {
+    return undefined
+  }
+  const composed = record.composedServers
+  return {
+    mcpServers: (servers ?? {}) as Record<string, McpServerDefinition>,
+    ...typeof composed === 'object' && composed !== null && !Array.isArray(composed)
+      ? { composedServers: composed as NonNullable<McpServersConfig['composedServers']> }
+      : {},
+  }
 }
 
 /**

@@ -168,6 +168,8 @@
 }
 
 .hint {
+  /* 字段内是 span；intro 之后那条整页说明是段落，因此两者共用这个类时不能带外边距。 */
+  margin: 0;
   font-size: 12px;
   line-height: 18px;
   color: var(--dsw-alias-label-tertiary);

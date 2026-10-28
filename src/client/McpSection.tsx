@@ -7,9 +7,16 @@ import type { InjectFace, PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
 import { Button } from '@deepseek-ai/dsh-client-ui-primitives'
 import { ServerEditor } from './ServerEditor.tsx'
 import type { McpServersStore, McpServersState } from './store.ts'
-import type { McpServerDefinition } from './servers.ts'
+import type { McpServerDefinition, McpServerSource } from './servers.ts'
 import type { McpKey } from './locales.ts'
 import css from './McpSection.module.css'
+
+/** 只读行右上角的来源标签；可写层不显示。 */
+const SOURCE_LABEL: Record<Exclude<McpServerSource, 'own'>, McpKey> = {
+  deployment: 'sourceDeployment',
+  file: 'sourceFile',
+  legacy: 'sourceLegacy',
+}
 
 /** {@link McpSection} 在注册侧依赖的东西。 */
 export interface McpSectionInjected {
@@ -70,6 +77,7 @@ export function McpSection(props: McpSectionProps): ReactNode {
     <section className={css.section} aria-label={t('title')}>
       <h2 className={css.title}>{t('title')}</h2>
       <p className={css.intro}>{t('intro')}</p>
+      {state.status === 'ready' ? <p className={css.hint}>{t('scopeHint')}</p> : null}
 
       {state.status === 'unavailable' ? <p className={css.notice} role="alert">{t('loadFailed')}</p> : null}
       {state.status === 'ready' && !state.writable
@@ -91,30 +99,35 @@ export function McpSection(props: McpSectionProps): ReactNode {
                       <span className={css.rowTag}>
                         {row.transport === 'stdio' ? t('transportStdio') : t('transportStreamableHttp')}
                       </span>
+                      {row.source === 'own' ? null : (
+                        <span className={css.rowTag}>{t(SOURCE_LABEL[row.source])}</span>
+                      )}
                       {row.enabled ? null : <span className={css.rowTag}>{t('disabled')}</span>}
                     </span>
-                    <span className={css.rowActions}>
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        disabled={!state.writable}
-                        onClick={() => { setEditingName(row.name) }}
-                      >
-                        {t('editServer')}
-                      </Button>
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        disabled={!state.writable}
-                        onClick={() => { setConfirming(row.name) }}
-                      >
-                        {t('removeServer')}
-                      </Button>
-                    </span>
+                    {row.editable ? (
+                      <span className={css.rowActions}>
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          disabled={!state.writable}
+                          onClick={() => { setEditingName(row.name) }}
+                        >
+                          {t('editServer')}
+                        </Button>
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          disabled={!state.writable}
+                          onClick={() => { setConfirming(row.name) }}
+                        >
+                          {t('removeServer')}
+                        </Button>
+                      </span>
+                    ) : null}
                   </div>
                   <span className={css.rowTarget}>{row.target}</span>
 
-                  {confirming !== row.name ? null : (
+                  {!row.editable || confirming !== row.name ? null : (
                     <div className={css.confirm}>
                       <span className={css.confirmText}>{t('removeTitle')}</span>
                       <span className={css.hint}>{t('removeDescription')}</span>
@@ -135,7 +148,7 @@ export function McpSection(props: McpSectionProps): ReactNode {
                     </div>
                   )}
 
-                  {editingName !== row.name ? null : (
+                  {!row.editable || editingName !== row.name ? null : (
                     <ServerEditor
                       key={`edit:${row.name}`}
                       originalName={row.name}
