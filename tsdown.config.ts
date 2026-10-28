@@ -21,7 +21,8 @@ import { readFile } from 'node:fs/promises'
 import { dirname, resolve as resolvePath } from 'node:path'
 import { transform } from 'lightningcss'
 import { defineConfig } from 'tsdown'
-import type { Plugin, UserConfig } from 'tsdown'
+// tsdown 0.23 把插件类型从 `Plugin` 改名为 `TsdownPlugin`（Rolldown 插件 + tsdown 钩子）。
+import type { TsdownPlugin, UserConfig } from 'tsdown'
 
 /** 包名，会写进模块加载交接协议，也会打在注入的 style 标签上。 */
 const PACKAGE_NAME = 'dsh-mcp-servers'
@@ -78,7 +79,7 @@ function styleInjectionModule(id: string, fileId: string, css: string, classMap:
  * 把 `*.module.css` 编译成带哈希的类名映射，外加一个一次性的 style 标签。虚拟 id
  * 让样式表绕开 tsdown 自己的 CSS 管线，否则就需要再引入一个构建插件。
  */
-function cssModulesPlugin(): Plugin {
+function cssModulesPlugin(): TsdownPlugin {
   return {
     name: 'dsh-css-modules-inline',
     resolveId(source: string, importer: string | undefined) {
@@ -108,7 +109,7 @@ function cssModulesPlugin(): Plugin {
  * 心的值导入要么会内联出另一份插件运行时，要么会在浏览器里直接抛错；跨插件协作应
  * 该走 Cordis 服务。
  */
-function purityPlugin(): Plugin {
+function purityPlugin(): TsdownPlugin {
   return {
     name: 'dsh-client-bundle-purity',
     resolveId(source: string) {
