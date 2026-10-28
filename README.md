@@ -31,10 +31,10 @@ dsh plugin --profile desktop add github:MosaicAccount/dsh-mcp-servers
    ```yaml
    # <harness home>/profiles/<web|desktop>/pnpm-workspace.yaml
    allowBuilds:
-     "dsh-mcp-servers@git+https://github.com/MosaicAccount/dsh-mcp-servers#<commit>": true
+     "dsh-mcp-servers@https://codeload.github.com/MosaicAccount/dsh-mcp-servers/tar.gz/<commit>": true
    ```
 
-   键里带 `#<commit>`（pnpm 把批准固定到那次提交），所以直接复制 pnpm 打印的内容最省事。也可以安装失败后，在 **设置 → 插件** 里点“允许这些脚本并重试”。
+   键里带具体提交（pnpm 把批准固定到那次提交），所以**直接复制 pnpm 打印的那一行**最省事；更新到新提交时，若要跑新提交的构建脚本，需要按同样方式再加一行。也可以安装失败后，在 **设置 → 插件** 里点“允许这些脚本并重试”。
 
 2. **官方 Desktop 的 profile 归 Electron 应用所有**：用 CLI 安装前先打开一次 Desktop 初始化 profile、再完全退出；用应用内插件管理器则不用退出。
 
