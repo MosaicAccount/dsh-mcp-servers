@@ -114,7 +114,15 @@ export function serverTarget(definition: McpServerDefinition): string {
   return [definition.command ?? '', ...args].filter(part => part !== '').join(' ')
 }
 
-/** 一次暂存中的服务编辑；每个字段都是表单可以往返转换的文本。 */
+/** 表单里一行键值对（环境变量或请求头）；两列都由用户逐个填写。 */
+export interface KeyValueRow {
+  /** 变量名或请求头名。 */
+  key: string
+  /** 变量值或请求头值。 */
+  value: string
+}
+
+/** 一次暂存中的服务编辑；每个字段都对应表单里的一个控件。 */
 export interface ServerDraft {
   /** 服务名称空间，即设置里的映射键。 */
   name: string
@@ -124,16 +132,16 @@ export interface ServerDraft {
   transport: McpTransport
   /** stdio 可执行文件。 */
   command: string
-  /** stdio 参数，每行一个。 */
-  args: string
-  /** stdio 环境变量，每行一个 `NAME=value`。 */
-  env: string
+  /** stdio 参数；每个参数一个输入框。 */
+  args: string[]
+  /** stdio 环境变量；逐行编辑。 */
+  env: KeyValueRow[]
   /** stdio 工作目录。 */
   cwd: string
   /** streamable-http 端点 URL。 */
   url: string
-  /** streamable-http 请求头，每行一个 `Name: value`。 */
-  headers: string
+  /** streamable-http 请求头；逐行编辑。 */
+  headers: KeyValueRow[]
   /** 单次工具调用超时，按用户输入的原样保存。 */
   toolCallTimeoutMs: string
 }
@@ -141,37 +149,80 @@ export interface ServerDraft {
 /** 阻止保存某份草稿的问题。 */
 export type McpDraftProblem = 'name' | 'command' | 'url' | 'timeout' | 'pairs'
 
-/** 把一行草稿字段拆成非空的行数组。 */
-function lines(text: string): string[] {
-  return text.split('\n').map(line => line.trim()).filter(line => line !== '')
+/**
+ * 一份引导模板：点一下就把常见服务填好，用户只需补路径/令牌。
+ *
+ * 只带命令、参数与传输方式，不预置任何真实凭据；名字会避开已有服务。
+ */
+export interface ServerTemplate {
+  /** 稳定的模板键，文案由页面自己的字典提供。 */
+  readonly id: 'blank' | 'memory' | 'filesystem' | 'remote'
 }
 
+/** 添加服务时可选的模板，按展示顺序排列。 */
+export const SERVER_TEMPLATES: readonly ServerTemplate[] = [
+  { id: 'memory' },
+  { id: 'filesystem' },
+  { id: 'remote' },
+  { id: 'blank' },
+]
+
 /**
- * 解析一份 `NAME=value` / `Name: value` 草稿字段。
- * @param text - 草稿字段内容。
- * @param separator - 每行必须包含的字面分隔符。
- * @returns 解析出的映射；某行没有分隔符时返回 undefined。
+ * 把用户逐个填写的键值行收成映射：两列都空的行直接忽略，并报告缺名或重名。
+ * @param rows - 表单里的键值行。
+ * @returns 收好的映射；有缺名或重名时返回 undefined。
  */
-export function parsePairs(text: string, separator: '=' | ':'): Record<string, string> | undefined {
+export function collectPairs(rows: readonly KeyValueRow[]): Record<string, string> | undefined {
   const result: Record<string, string> = {}
-  for (const line of lines(text)) {
-    const at = line.indexOf(separator)
-    if (at <= 0) return undefined
-    result[line.slice(0, at).trim()] = line.slice(at + 1).trim()
+  for (const row of rows) {
+    const key = row.key.trim()
+    const value = row.value.trim()
+    if (key === '' && value === '') continue
+    if (key === '' || Object.hasOwn(result, key)) return undefined
+    result[key] = value
   }
   return result
 }
 
 /**
- * 把一个映射渲染成每行一条的草稿字段。
- * @param values - 待渲染的映射。
- * @param separator - 连接键与值所用的分隔符。
- * @returns 草稿字段文本。
+ * 一行键值对是否完整：要么两列都空（会被忽略），要么必须填名字。
+ * @param row - 表单里的键值行。
+ * @returns 该行是否可以进入保存。
  */
-export function formatPairs(values: Record<string, string>, separator: '=' | ':'): string {
-  return Object.entries(values)
-    .map(([key, value]) => `${key}${separator}${separator === '=' ? '' : ' '}${value}`)
-    .join('\n')
+function completePair(row: KeyValueRow): boolean {
+  return row.key.trim() !== '' || row.value.trim() === ''
+}
+
+/**
+ * 从模板生成一份草稿；名字取模板名，并与已有名字去重。
+ * @param id - 模板键。
+ * @param takenNames - 当前已经存在的服务名，用来避免重名。
+ * @returns 填好的草稿。
+ */
+export function draftFromTemplate(id: ServerTemplate['id'], takenNames: readonly string[] = []): ServerDraft {
+  const draft = emptyDraft()
+  const named = (base: string): string => {
+    if (!takenNames.includes(base)) return base
+    for (let index = 2; ; index += 1) {
+      const candidate = `${base}-${index}`
+      if (!takenNames.includes(candidate)) return candidate
+    }
+  }
+  switch (id) {
+    case 'memory':
+      return { ...draft, name: named('memory'), command: 'npx', args: ['-y', '@modelcontextprotocol/server-memory'] }
+    case 'filesystem':
+      return {
+        ...draft,
+        name: named('filesystem'),
+        command: 'npx',
+        args: ['-y', '@modelcontextprotocol/server-filesystem', '/path/to/directory'],
+      }
+    case 'remote':
+      return { ...draft, name: named('remote'), transport: 'streamable-http', url: 'http://localhost:3000/mcp' }
+    case 'blank':
+      return draft
+  }
 }
 
 /** 新服务的空白草稿。 */
@@ -181,13 +232,18 @@ export function emptyDraft(): ServerDraft {
     enabled: true,
     transport: 'stdio',
     command: '',
-    args: '',
-    env: '',
+    args: [],
+    env: [],
     cwd: '',
     url: '',
-    headers: '',
+    headers: [],
     toolCallTimeoutMs: '',
   }
+}
+
+/** 把一个映射展开成表单里的键值行。 */
+function pairRows(values: Record<string, string> | undefined): KeyValueRow[] {
+  return Object.entries(values ?? {}).map(([key, value]) => ({ key, value }))
 }
 
 /**
@@ -197,16 +253,17 @@ export function emptyDraft(): ServerDraft {
  * @returns 可写的草稿。
  */
 export function draftFrom(name: string, definition: McpServerDefinition): ServerDraft {
+  const args = definition.args ?? []
   return {
     name,
     enabled: definition.enabled !== false,
     transport: resolveTransport(definition),
     command: definition.command ?? '',
-    args: (definition.args ?? []).join('\n'),
-    env: formatPairs(definition.env ?? {}, '='),
+    args: [...args],
+    env: pairRows(definition.env),
     cwd: definition.cwd ?? '',
     url: definition.url ?? '',
-    headers: formatPairs(definition.headers ?? {}, ':'),
+    headers: pairRows(definition.headers),
     toolCallTimeoutMs: definition.toolCallTimeoutMs === undefined ? '' : String(definition.toolCallTimeoutMs),
   }
 }
@@ -218,14 +275,11 @@ export function draftFrom(name: string, definition: McpServerDefinition): Server
  */
 export function validateDraft(draft: ServerDraft): McpDraftProblem | null {
   if (!SERVER_NAME_PATTERN.test(draft.name)) return 'name'
-  if (draft.transport === 'stdio') {
-    if (draft.command.trim() === '') return 'command'
-    if (parsePairs(draft.env, '=') === undefined) return 'pairs'
-    return null
-  }
-  if (draft.url.trim() === '') return 'url'
-  if (parsePairs(draft.headers, ':') === undefined) return 'pairs'
-  return null
+  const rows = draft.transport === 'stdio' ? draft.env : draft.headers
+  if (!rows.every(completePair)) return 'pairs'
+  if (collectPairs(rows) === undefined) return 'pairs'
+  if (draft.transport === 'stdio') return draft.command.trim() === '' ? 'command' : null
+  return draft.url.trim() === '' ? 'url' : null
 }
 
 /**
@@ -246,14 +300,14 @@ export function definitionFrom(draft: ServerDraft): McpServerDefinition | undefi
     ...toolCallTimeoutMs === undefined ? {} : { toolCallTimeoutMs },
   }
   if (draft.transport === 'streamable-http') {
-    return { ...shared, url: draft.url.trim(), headers: parsePairs(draft.headers, ':') ?? {} }
+    return { ...shared, url: draft.url.trim(), headers: collectPairs(draft.headers) ?? {} }
   }
   const cwd = draft.cwd.trim()
   return {
     ...shared,
     command: draft.command.trim(),
-    args: lines(draft.args),
-    env: parsePairs(draft.env, '=') ?? {},
+    args: draft.args.map(argument => argument.trim()).filter(argument => argument !== ''),
+    env: collectPairs(draft.env) ?? {},
     ...cwd === '' ? {} : { cwd },
   }
 }

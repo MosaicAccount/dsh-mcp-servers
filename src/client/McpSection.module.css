@@ -175,35 +175,222 @@
   color: var(--dsw-alias-label-tertiary);
 }
 
-.transportRow {
+
+/* 分节：每节是一块轻量的表单区域，标题带一行说明。 */
+.step {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.stepHead {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.stepTitle {
+  font-size: 13px;
+  line-height: 20px;
+  font-weight: 500;
+  color: var(--dsw-alias-label-primary);
+}
+
+.stepHint {
+  font-size: 12px;
+  line-height: 18px;
+  color: var(--dsw-alias-label-tertiary);
+}
+
+/* 表单控件铺满所在列，和外壳的设置表单一致。 */
+.field input,
+.pairRow input {
+  box-sizing: border-box;
+  width: 100%;
+}
+
+/* 参数行是 flex：Input 的外层 span 吃掉剩余宽度，删除按钮保持原尺寸。 */
+.repeatRow > span:first-child {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+/* 键值行是 grid：两列都要能压缩，输入框铺满各自的列。 */
+.pairRow > span {
+  min-width: 0;
+}
+
+.pairRow input {
+  width: 100%;
+}
+
+/* 命令、参数与键值都是机器可读的值，用等宽字体更好核对。 */
+.repeatRow input,
+.pairRow input {
+  font-family: var(--ds-font-family-code);
+  font-size: 13px;
+}
+
+.fieldError {
+  margin: 0;
+  font-size: 12px;
+  line-height: 18px;
+  color: var(--dsw-alias-state-error-primary);
+}
+
+.fieldError + .hint {
+  display: none;
+}
+
+/* 模板：新增时的"快速开始"起手式。 */
+.templateBlock {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 12px;
+  border: 0.5px dashed var(--dsw-alias-border-l3);
+  border-radius: 12px;
+}
+
+.templateChips {
   display: flex;
   flex-wrap: wrap;
   gap: 6px;
 }
 
-.textarea {
-  box-sizing: border-box;
-  width: 100%;
-  padding: 8px 10px;
+/* 连接方式：两张可点选卡片，取代下拉框，一眼看出区别。 */
+.transportCards {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 8px;
+}
+
+.transportCard,
+.transportCardActive {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 10px 12px;
+  text-align: left;
   border: 0.5px solid var(--dsw-alias-border-l4);
-  border-radius: 8px;
-  font: inherit;
-  font-family: var(--ds-font-family-code);
-  font-size: 13px;
-  line-height: 20px;
+  border-radius: 12px;
   background: var(--dsw-alias-bg-layer-1);
   color: var(--dsw-alias-label-primary);
-  resize: vertical;
+  font: inherit;
+  cursor: pointer;
 }
 
-.textarea:focus {
-  outline: none;
+.transportCard:hover:not(:disabled) {
+  border-color: var(--dsw-alias-border-l3);
+}
+
+.transportCardActive {
   border-color: var(--dsw-alias-brand-primary);
+  box-shadow: inset 0 0 0 1px var(--dsw-alias-brand-primary);
 }
 
-.textarea:disabled {
+.transportCard:disabled,
+.transportCardActive:disabled {
   opacity: 0.6;
   cursor: default;
+}
+
+.transportCardTitle {
+  font-size: 13px;
+  line-height: 20px;
+  font-weight: 500;
+}
+
+.transportCardDesc {
+  font-size: 12px;
+  line-height: 18px;
+  color: var(--dsw-alias-label-tertiary);
+}
+
+/* 启用开关：右对齐的一行。 */
+.switchRow {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.switchCopy {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+/* 重复行：参数、环境变量、请求头都走同一套逐行控件。 */
+.repeatRows {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.repeatRow {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.pairRows {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.pairRow {
+  display: grid;
+  grid-template-columns: minmax(120px, 1fr) minmax(120px, 1.4fr) auto;
+  align-items: center;
+  gap: 6px;
+}
+
+.rowActionsStart {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+/* 高级设置：默认收起，避免一次铺开十几个字段。 */
+.advancedToggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0;
+  border: 0;
+  background: none;
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+}
+
+.advancedToggle:disabled {
+  cursor: default;
+  opacity: 0.6;
+}
+
+.chevron,
+.chevronOpen {
+  width: 12px;
+  height: 12px;
+  flex: none;
+  color: var(--dsw-alias-label-tertiary);
+  transition: transform 120ms ease;
+}
+
+.chevronOpen {
+  transform: rotate(90deg);
+}
+
+.advancedBody {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 10px 12px;
+  border-radius: 12px;
+  background: var(--dsw-alias-bg-layer-1);
 }
 
 .editorActions {

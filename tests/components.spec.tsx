@@ -176,6 +176,101 @@ describe('McpSection', () => {
     })
   })
 
+  it('用模板一键填好常见服务，用户只需确认或改细节', async () => {
+    const { save } = renderSection({ ...READY, rows: [] })
+    fireEvent.click(screen.getByText(en.addServer))
+    fireEvent.click(screen.getByText(en.templateMemory))
+
+    expect((screen.getByLabelText(en.name) as HTMLInputElement).value).toBe('memory')
+    expect((screen.getByLabelText(en.command) as HTMLInputElement).value).toBe('npx')
+    expect((screen.getByLabelText(`${en.args} 1`) as HTMLInputElement).value).toBe('-y')
+    expect((screen.getByLabelText(`${en.args} 2`) as HTMLInputElement).value)
+      .toBe('@modelcontextprotocol/server-memory')
+
+    fireEvent.click(screen.getByText(en.save))
+    await waitFor(() => {
+      expect(save).toHaveBeenCalledWith('memory', {
+        enabled: true,
+        transport: 'stdio',
+        command: 'npx',
+        args: ['-y', '@modelcontextprotocol/server-memory'],
+        env: {},
+      }, undefined)
+    })
+  })
+
+  it('模板生成的名字避开已有服务', () => {
+    renderSection({
+      ...READY,
+      rows: [
+        ...READY.rows,
+        {
+          name: 'memory',
+          definition: { command: 'x' },
+          enabled: true,
+          transport: 'stdio',
+          target: 'x',
+          source: 'own',
+          editable: true,
+          overridden: false,
+        },
+      ],
+    })
+    fireEvent.click(screen.getByText(en.addServer))
+    fireEvent.click(screen.getByText(en.templateMemory))
+    expect((screen.getByLabelText(en.name) as HTMLInputElement).value).toBe('memory-2')
+  })
+
+  it('参数是逐行控件，可增可删，不再手写多行文本', async () => {
+    const { save } = renderSection({ ...READY, rows: [] })
+    fireEvent.click(screen.getByText(en.addServer))
+    fireEvent.change(screen.getByLabelText(en.name), { target: { value: 'args-test' } })
+    fireEvent.change(screen.getByLabelText(en.command), { target: { value: 'node' } })
+
+    fireEvent.click(screen.getByText(en.addArgument))
+    fireEvent.change(screen.getByLabelText(`${en.args} 1`), { target: { value: '--first' } })
+    fireEvent.click(screen.getByText(en.addArgument))
+    fireEvent.change(screen.getByLabelText(`${en.args} 2`), { target: { value: '--second' } })
+    fireEvent.click(screen.getByLabelText(`${en.removeArgument} 1`))
+
+    fireEvent.click(screen.getByText(en.save))
+    await waitFor(() => {
+      expect(save).toHaveBeenCalledWith('args-test', expect.objectContaining({
+        command: 'node',
+        args: ['--second'],
+      }), undefined)
+    })
+  })
+
+  it('环境变量按行列填写，保存成映射', async () => {
+    const { save } = renderSection({ ...READY, rows: [] })
+    fireEvent.click(screen.getByText(en.addServer))
+    fireEvent.change(screen.getByLabelText(en.name), { target: { value: 'env-test' } })
+    fireEvent.change(screen.getByLabelText(en.command), { target: { value: 'node' } })
+
+    fireEvent.click(screen.getByText(en.addEnv))
+    fireEvent.change(screen.getByLabelText(`${en.envName} 1`), { target: { value: 'API_TOKEN' } })
+    fireEvent.change(screen.getByLabelText(`${en.envValue} 1`), { target: { value: 'secret' } })
+
+    fireEvent.click(screen.getByText(en.save))
+    await waitFor(() => {
+      expect(save).toHaveBeenCalledWith('env-test', expect.objectContaining({
+        env: { API_TOKEN: 'secret' },
+      }), undefined)
+    })
+  })
+
+  it('高级设置默认收起，按需展开才显示工作目录与超时', () => {
+    renderSection({ ...READY, rows: [] })
+    fireEvent.click(screen.getByText(en.addServer))
+    expect(screen.queryByLabelText(en.cwd)).toBeNull()
+    expect(screen.queryByLabelText(en.toolCallTimeout)).toBeNull()
+
+    fireEvent.click(screen.getByText(en.advanced))
+    expect(screen.queryByLabelText(en.cwd)).not.toBeNull()
+    expect(screen.queryByLabelText(en.toolCallTimeout)).not.toBeNull()
+  })
+
   it('被接受的写入会关闭编辑器', async () => {
     const { save } = renderSection({ ...READY, rows: [] })
     fireEvent.click(screen.getByText(en.addServer))

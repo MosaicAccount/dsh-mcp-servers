@@ -24,13 +24,6 @@ export function Input({ icon: _icon, ...rest }: InputHTMLAttributes<HTMLInputEle
   return <input {...rest} />
 }
 
-/** 外壳 `Pill` 的最小替身。 */
-export function Pill({ children, active: _active, ...rest }: ButtonHTMLAttributes<HTMLButtonElement> & {
-  active?: boolean
-}): ReactNode {
-  return <button type="button" {...rest}>{children}</button>
-}
-
 /** 外壳 `Switch` 的最小替身。 */
 export function Switch({ checked, onChange, label, disabled, title }: {
   checked: boolean

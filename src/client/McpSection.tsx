@@ -85,7 +85,7 @@ export function McpSection(props: McpSectionProps): ReactNode {
         : null}
       {state.error === null ? null : <p className={css.error} role="alert">{t(state.error)}</p>}
 
-      {state.status !== 'ready'
+      {state.status !== 'ready' || (state.rows.length === 0 && adding)
         ? null
         : state.rows.length === 0
         ? <p className={css.empty}>{t('empty')}</p>
@@ -153,6 +153,7 @@ export function McpSection(props: McpSectionProps): ReactNode {
                       key={`edit:${row.name}`}
                       originalName={row.name}
                       originalDefinition={row.definition}
+                      takenNames={state.rows.map(candidate => candidate.name)}
                       t={t}
                       disabled={!state.writable || state.saving}
                       onSave={save}
@@ -176,6 +177,7 @@ export function McpSection(props: McpSectionProps): ReactNode {
               key="edit:new"
               originalName={undefined}
               originalDefinition={undefined}
+              takenNames={state.rows.map(candidate => candidate.name)}
               t={t}
               disabled={state.saving}
               onSave={save}

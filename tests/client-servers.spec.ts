@@ -2,12 +2,13 @@
 
 import { describe, expect, it } from 'vitest'
 import {
+  SERVER_TEMPLATES,
+  collectPairs,
   decodeMcpServersConfig,
   definitionFrom,
   draftFrom,
+  draftFromTemplate,
   emptyDraft,
-  formatPairs,
-  parsePairs,
   resolveTransport,
   serverTarget,
   validateDraft,
@@ -43,22 +44,52 @@ describe('resolveTransport 与 serverTarget', () => {
   })
 })
 
-describe('parsePairs 与 formatPairs', () => {
-  it('环境变量行可以往返转换', () => {
-    expect(parsePairs('A=1\nB=2', '=')).toEqual({ A: '1', B: '2' })
-    expect(formatPairs({ A: '1' }, '=')).toBe('A=1')
+describe('collectPairs', () => {
+  it('把逐行填写的键值收成映射，忽略两列都空的行', () => {
+    expect(collectPairs([
+      { key: 'A', value: '1' },
+      { key: ' ', value: ' ' },
+      { key: 'B', value: '2' },
+    ])).toEqual({ A: '1', B: '2' })
+    expect(collectPairs([])).toEqual({})
   })
 
-  it('请求头行可以往返转换，且值里的冒号会被保留', () => {
-    expect(parsePairs('Authorization: Bearer x', ':')).toEqual({ Authorization: 'Bearer x' })
-    expect(formatPairs({ Authorization: 'Bearer x' }, ':')).toBe('Authorization: Bearer x')
+  it('缺名或重名时拒绝', () => {
+    expect(collectPairs([{ key: '', value: 'orphan' }])).toBeUndefined()
+    expect(collectPairs([{ key: 'A', value: '1' }, { key: 'A', value: '2' }])).toBeUndefined()
   })
 
-  it('报出没有可用分隔符的行，并忽略空行', () => {
-    expect(parsePairs('NOPE', '=')).toBeUndefined()
-    expect(parsePairs('=value', '=')).toBeUndefined()
-    expect(parsePairs('\n A=1 \n', '=')).toEqual({ A: '1' })
-    expect(parsePairs('', '=')).toEqual({})
+  it('值里的冒号、等号与空格原样保留', () => {
+    expect(collectPairs([{ key: 'Authorization', value: 'Bearer a:b=c' }]))
+      .toEqual({ Authorization: 'Bearer a:b=c' })
+  })
+})
+
+describe('模板', () => {
+  it('除空白模板外，每个模板都给出一个能直接保存的起手配置', () => {
+    for (const template of SERVER_TEMPLATES.filter(template => template.id !== 'blank')) {
+      const draft = draftFromTemplate(template.id)
+      expect(validateDraft(draft)).toBeNull()
+      expect(definitionFrom(draft)).toBeDefined()
+    }
+    // 空白模板就是一张空表单：它有意不通过校验，等用户自己填写。
+    expect(validateDraft(draftFromTemplate('blank'))).toBe('name')
+  })
+
+  it('模板名字避开已有服务', () => {
+    expect(draftFromTemplate('memory').name).toBe('memory')
+    expect(draftFromTemplate('memory', ['memory']).name).toBe('memory-2')
+    expect(draftFromTemplate('memory', ['memory', 'memory-2']).name).toBe('memory-3')
+  })
+
+  it('远程 HTTP 模板直接给出端点和传输方式', () => {
+    const draft = draftFromTemplate('remote')
+    expect(draft.transport).toBe('streamable-http')
+    expect(draft.url).toBe('http://localhost:3000/mcp')
+  })
+
+  it('空白模板不带任何预置内容', () => {
+    expect(draftFromTemplate('blank')).toEqual(emptyDraft())
   })
 })
 
@@ -71,7 +102,14 @@ describe('draftFrom 与 definitionFrom', () => {
       cwd: '/tmp',
       toolCallTimeoutMs: 5,
     })
-    expect(draft).toMatchObject({ name: 'alpha', transport: 'stdio', command: 'run', args: '--x', env: 'A=1', cwd: '/tmp' })
+    expect(draft).toMatchObject({
+      name: 'alpha',
+      transport: 'stdio',
+      command: 'run',
+      args: ['--x'],
+      env: [{ key: 'A', value: '1' }],
+      cwd: '/tmp',
+    })
     expect(definitionFrom(draft)).toEqual({
       enabled: true,
       transport: 'stdio',
@@ -98,12 +136,27 @@ describe('draftFrom 与 definitionFrom', () => {
     draft.name = 'web'
     draft.transport = 'streamable-http'
     draft.url = 'http://x/mcp'
-    draft.headers = 'A: 1'
+    draft.headers = [{ key: 'A', value: '1' }]
     expect(definitionFrom(draft)).toEqual({
       enabled: true,
       transport: 'streamable-http',
       url: 'http://x/mcp',
       headers: { A: '1' },
+    })
+  })
+
+  it('参数与键值行里的空项不会进入定义', () => {
+    const draft = emptyDraft()
+    draft.name = 'a'
+    draft.command = 'x'
+    draft.args = ['--x', ' ', '']
+    draft.env = [{ key: '', value: '' }]
+    expect(definitionFrom(draft)).toEqual({
+      enabled: true,
+      transport: 'stdio',
+      command: 'x',
+      args: ['--x'],
+      env: {},
     })
   })
 
@@ -141,16 +194,26 @@ describe('validateDraft', () => {
     expect(validateDraft(draft)).toBeNull()
   })
 
-  it('报出格式错误的参数行或请求头行', () => {
+  it('报出缺名或重名的环境变量/请求头行', () => {
     const draft = emptyDraft()
     draft.name = 'a'
     draft.command = 'x'
-    draft.env = 'NOPE'
+    draft.env = [{ key: '', value: 'orphan' }]
     expect(validateDraft(draft)).toBe('pairs')
-    draft.env = ''
+    draft.env = [{ key: 'A', value: '1' }, { key: 'A', value: '2' }]
+    expect(validateDraft(draft)).toBe('pairs')
+    draft.env = []
     draft.transport = 'streamable-http'
     draft.url = 'http://x/mcp'
-    draft.headers = 'NOPE'
+    draft.headers = [{ key: '', value: 'orphan' }]
     expect(validateDraft(draft)).toBe('pairs')
+  })
+
+  it('两列都空的键值行不阻止保存', () => {
+    const draft = emptyDraft()
+    draft.name = 'a'
+    draft.command = 'x'
+    draft.env = [{ key: '', value: '' }]
+    expect(validateDraft(draft)).toBeNull()
   })
 })
