@@ -1,6 +1,6 @@
 {
   "name": "dsh-mcp-servers",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Mount external Model Context Protocol servers in DeepSeek Harness from a cordis.yml row or mcp.json, with an MCP page in the settings panel of the official web and desktop profiles",
   "type": "module",
   "license": "MIT",
